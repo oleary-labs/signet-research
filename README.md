@@ -1,2 +1,2 @@
-# onekey-research
-Research coding for OneKey.
+# signet
+Research coding for Signet.

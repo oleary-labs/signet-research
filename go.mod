@@ -1,4 +1,4 @@
-module onekey-research
+module signet
 
 go 1.24.6
 

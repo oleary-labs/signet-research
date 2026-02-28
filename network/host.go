@@ -8,11 +8,14 @@ import (
 	"sync"
 
 	"github.com/libp2p/go-libp2p"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
+	libp2pnet "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	ma "github.com/multiformats/go-multiaddr"
+
 	"github.com/luxfi/threshold/pkg/party"
 	thresholdProtocol "github.com/luxfi/threshold/pkg/protocol"
 )
@@ -38,8 +41,17 @@ type Host struct {
 }
 
 // NewHost creates a libp2p host listening on the given multiaddr (e.g. "/ip4/127.0.0.1/tcp/0").
-func NewHost(ctx context.Context, self party.ID, listenAddr string) (*Host, error) {
-	h, err := libp2p.New(libp2p.ListenAddrStrings(listenAddr))
+// The host's identity is derived from privKey; party.ID == peer.ID.String().
+func NewHost(ctx context.Context, privKey crypto.PrivKey, listenAddr string) (*Host, error) {
+	self, err := PartyIDFromPrivKey(privKey)
+	if err != nil {
+		return nil, fmt.Errorf("party ID from key: %w", err)
+	}
+
+	h, err := libp2p.New(
+		libp2p.Identity(privKey),
+		libp2p.ListenAddrStrings(listenAddr),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("libp2p new: %w", err)
 	}
@@ -59,11 +71,37 @@ func NewHost(ctx context.Context, self party.ID, listenAddr string) (*Host, erro
 		incoming: make(chan *thresholdProtocol.Message, 1000),
 	}
 
+	// Register self in the mapping table.
+	host.RegisterPeer(self, h.ID())
+
 	// Register stream handler for directed messages.
 	h.SetStreamHandler(ProtocolID, host.handleStream)
 
+	// Auto-populate party mappings whenever a peer connects.
+	h.Network().Notify(&connectionNotifee{host: host})
+
 	return host, nil
 }
+
+// NewHostFromFile loads or generates a persistent key from keyPath, then creates a host.
+func NewHostFromFile(ctx context.Context, keyPath, listenAddr string) (*Host, error) {
+	priv, err := LoadOrGenerateKey(keyPath)
+	if err != nil {
+		return nil, err
+	}
+	return NewHost(ctx, priv, listenAddr)
+}
+
+// connectionNotifee implements libp2pnet.Notifiee to auto-register party mappings on connect.
+type connectionNotifee struct{ host *Host }
+
+func (n *connectionNotifee) Connected(_ libp2pnet.Network, c libp2pnet.Conn) {
+	pid := c.RemotePeer()
+	n.host.RegisterPeer(party.ID(pid.String()), pid)
+}
+func (n *connectionNotifee) Disconnected(_ libp2pnet.Network, _ libp2pnet.Conn) {}
+func (n *connectionNotifee) Listen(_ libp2pnet.Network, _ ma.Multiaddr)          {}
+func (n *connectionNotifee) ListenClose(_ libp2pnet.Network, _ ma.Multiaddr)     {}
 
 // Self returns the party.ID of this host.
 func (h *Host) Self() party.ID { return h.self }
@@ -110,7 +148,7 @@ func (h *Host) Incoming() <-chan *thresholdProtocol.Message { return h.incoming 
 func (h *Host) Close() error { return h.h.Close() }
 
 // handleStream is called for every inbound stream on /threshold/1.0.0.
-func (h *Host) handleStream(s network.Stream) {
+func (h *Host) handleStream(s libp2pnet.Stream) {
 	defer s.Close()
 	msg, err := readMessage(s)
 	if err != nil {

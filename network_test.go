@@ -1,4 +1,4 @@
-package onekey_research
+package signet
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/luxfi/threshold/pkg/math/curve"
 	"github.com/luxfi/threshold/pkg/party"
 	"github.com/luxfi/threshold/pkg/pool"
@@ -14,23 +15,27 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"onekey-research/network"
+	"signet/network"
 )
 
 func TestLibp2pKeygen(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	parties := []party.ID{"alice", "bob", "charlie"}
+	n := 3
 	threshold := 2
 
-	// 1. Create libp2p hosts on localhost with random ports.
-	hosts := make([]*network.Host, len(parties))
-	for i, pid := range parties {
-		h, err := network.NewHost(ctx, pid, "/ip4/127.0.0.1/tcp/0")
+	// 1. Create libp2p hosts with ephemeral Ed25519 keypairs.
+	hosts := make([]*network.Host, n)
+	parties := make([]party.ID, n)
+	for i := 0; i < n; i++ {
+		priv, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+		require.NoError(t, err)
+		h, err := network.NewHost(ctx, priv, "/ip4/127.0.0.1/tcp/0")
 		require.NoError(t, err)
 		hosts[i] = h
-		t.Logf("host %s: peer=%s addrs=%v", pid, h.PeerID(), h.Addrs())
+		parties[i] = h.Self()
+		t.Logf("host %s: peer=%s addrs=%v", parties[i], h.PeerID(), h.Addrs())
 	}
 	defer func() {
 		for _, h := range hosts {
@@ -51,7 +56,7 @@ func TestLibp2pKeygen(t *testing.T) {
 
 	// 3. Create session networks.
 	sessionID := "test-keygen-session"
-	sessions := make([]*network.SessionNetwork, len(parties))
+	sessions := make([]*network.SessionNetwork, n)
 	for i, h := range hosts {
 		sn, err := network.NewSessionNetwork(ctx, h, sessionID)
 		require.NoError(t, err)

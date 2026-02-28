@@ -1,0 +1,59 @@
+{
+  "version": "1.0.0",
+  "project": "signet",
+  "description": "Agent registry for signet threshold signing + libp2p project",
+  "agents": {
+    "architect": {
+      "name": "architect",
+      "path": ".claude-library/agents/core/architect.md",
+      "description": "Design threshold protocols, libp2p session flows, and data structures",
+      "tools": ["Read", "Write", "Grep", "Glob"],
+      "triggers": ["design", "architecture", "protocol", "spec", "structure", "threshold", "MPC", "keygen"],
+      "category": "core",
+      "priority": 1
+    },
+    "engineer": {
+      "name": "engineer",
+      "path": ".claude-library/agents/core/engineer.md",
+      "description": "Implement Go code for threshold signing and P2P networking",
+      "tools": ["*"],
+      "triggers": ["implement", "code", "build", "fix", "write", "debug", "error"],
+      "category": "core",
+      "priority": 1
+    },
+    "reviewer": {
+      "name": "reviewer",
+      "path": ".claude-library/agents/core/reviewer.md",
+      "description": "Review Go code for correctness, safety, and idiomatic style",
+      "tools": ["Read", "Grep", "Glob"],
+      "triggers": ["review", "check", "quality", "security", "concurrency", "race"],
+      "category": "core",
+      "priority": 2
+    }
+  },
+  "commands": {
+    "build": {
+      "path": ".claude/commands/build.md",
+      "description": "Design, implement, and review a feature",
+      "agents": ["architect", "engineer", "reviewer"],
+      "workflow": "sequential"
+    },
+    "test": {
+      "path": ".claude/commands/test.md",
+      "description": "Run tests and fix failures",
+      "agents": ["engineer"],
+      "workflow": "single"
+    }
+  },
+  "contexts": {
+    "project": {
+      "path": ".claude-library/contexts/project.md",
+      "description": "Project overview, key packages, and Go conventions"
+    }
+  },
+  "settings": {
+    "auto_load_agents": false,
+    "max_parallel_agents": 3,
+    "cache_loaded_agents": true
+  }
+}
