@@ -94,6 +94,8 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		configs: make(map[string]*cmp.Config),
 	}
 
+	n.registerCoordHandler()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", n.handleHealth)
 	mux.HandleFunc("GET /v1/info", n.handleInfo)
@@ -209,8 +211,8 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 //
 //	{"session_id":"mykey1","parties":["16Uiu2...","16Uiu2...","16Uiu2..."],"threshold":1}
 //
-// All participating nodes must POST this endpoint concurrently with the same
-// session_id, parties list, and threshold.
+// Send to any one node in the parties list. That node coordinates with the others
+// automatically; the caller does not need to contact each node separately.
 func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SessionID string     `json:"session_id"`
@@ -226,27 +228,46 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n.log.Info("keygen starting",
-		zap.String("session_id", req.SessionID),
-		zap.Int("n", len(req.Parties)),
-		zap.Int("threshold", req.Threshold),
-	)
-
 	// party.NewIDSlice sorts the slice, as required by the CMP protocol.
 	sortedParties := party.NewIDSlice(req.Parties)
 
-	cfg, err := runKeygen(r.Context(), n.host, req.SessionID, sortedParties, req.Threshold, n.pool)
+	n.log.Info("keygen starting",
+		zap.String("session_id", req.SessionID),
+		zap.Int("n", len(sortedParties)),
+		zap.Int("threshold", req.Threshold),
+	)
+
+	// Subscribe to the session topic before notifying peers, so we're ready to
+	// receive GossipSub messages as soon as the mesh forms.
+	sn, err := network.NewSessionNetwork(r.Context(), n.host, req.SessionID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "session network: "+err.Error())
+		return
+	}
+	defer sn.Close()
+
+	// Tell every other party to subscribe and start. Waits for ACKs and then
+	// pauses for the GossipSub mesh to form.
+	if err := n.broadcastCoord(r.Context(), sortedParties, coordMsg{
+		Type:      msgKeygen,
+		SessionID: req.SessionID,
+		Parties:   sortedParties,
+		Threshold: req.Threshold,
+	}); err != nil {
+		httpError(w, http.StatusInternalServerError, "coordinate: "+err.Error())
+		return
+	}
+
+	cfg, err := runKeygenOn(r.Context(), n.host, sn, req.SessionID, sortedParties, req.Threshold, n.pool)
 	if err != nil {
 		n.log.Error("keygen failed", zap.String("session_id", req.SessionID), zap.Error(err))
 		httpError(w, http.StatusInternalServerError, "keygen: "+err.Error())
 		return
 	}
 
-	// Persist to disk (non-fatal).
 	if err := saveConfig(n.keyConfigPath(req.SessionID), cfg); err != nil {
 		n.log.Warn("persist config failed", zap.String("session_id", req.SessionID), zap.Error(err))
 	}
-
 	n.mu.Lock()
 	n.configs[req.SessionID] = cfg
 	n.mu.Unlock()
@@ -287,8 +308,8 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 //	  "message_hash":    "0xdeadbeef..."
 //	}
 //
-// All signing nodes must POST this endpoint concurrently with the same
-// sign_session_id, signers list, and message_hash.
+// Send to any one node in the signers list. That node coordinates with the others
+// automatically; the caller does not need to contact each node separately.
 func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		KeySessionID  string     `json:"key_session_id"`
@@ -340,10 +361,28 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 	n.log.Info("sign starting",
 		zap.String("key_session_id", req.KeySessionID),
 		zap.String("sign_session_id", req.SignSessionID),
-		zap.Int("signers", len(req.Signers)),
+		zap.Int("signers", len(sortedSigners)),
 	)
 
-	sig, err := runSign(r.Context(), n.host, req.SignSessionID, cfg, sortedSigners, msgHash, n.pool)
+	sn, err := network.NewSessionNetwork(r.Context(), n.host, req.SignSessionID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "session network: "+err.Error())
+		return
+	}
+	defer sn.Close()
+
+	if err := n.broadcastCoord(r.Context(), sortedSigners, coordMsg{
+		Type:          msgSign,
+		KeySessionID:  req.KeySessionID,
+		SignSessionID: req.SignSessionID,
+		Signers:       sortedSigners,
+		MessageHash:   msgHash,
+	}); err != nil {
+		httpError(w, http.StatusInternalServerError, "coordinate: "+err.Error())
+		return
+	}
+
+	sig, err := runSignOn(r.Context(), n.host, sn, req.SignSessionID, cfg, sortedSigners, msgHash, n.pool)
 	if err != nil {
 		n.log.Error("sign failed", zap.String("sign_session_id", req.SignSessionID), zap.Error(err))
 		httpError(w, http.StatusInternalServerError, "sign: "+err.Error())
