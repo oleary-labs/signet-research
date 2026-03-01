@@ -127,14 +127,14 @@ func TestLibp2pKeygen(t *testing.T) {
 }
 
 // TestLibp2pSign runs a full keygen followed by a threshold signing session.
-// Three nodes participate in keygen (threshold=1), then 2-of-3 sign a message.
+// Three nodes participate in keygen (threshold=2), then 2-of-3 sign a message.
 func TestLibp2pSign(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
 	const (
 		n         = 3
-		threshold = 1 // any 2-of-3 can sign
+		threshold = 2 // any 2-of-3 can sign
 	)
 
 	// --- Setup: create and fully-connect hosts ---

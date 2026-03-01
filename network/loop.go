@@ -12,17 +12,32 @@ import (
 // This mirrors the pattern from test.HandlerLoop but uses the libp2p
 // SessionNetwork instead of the in-memory test.Network.
 func HandlerLoop(h *protocol.Handler, net *SessionNetwork) {
+	// Drain outgoing messages in a separate goroutine. When h.Listen()
+	// closes (protocol complete), close done to signal the receive loop.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for msg := range h.Listen() {
+			net.Send(msg)
+		}
+	}()
+
+	// Receive incoming messages until the protocol is done or the session closes.
+	// The inner select guards against the race where done closes between the
+	// outer select and the h.Accept() call.
+	incoming := net.Next()
 	for {
 		select {
-		case msg, ok := <-h.Listen():
-			if !ok {
-				return
-			}
-			net.Send(msg)
-
-		case msg, ok := <-net.Next():
+		case <-done:
+			return
+		case msg, ok := <-incoming:
 			if !ok || msg == nil {
 				return
+			}
+			select {
+			case <-done:
+				return
+			default:
 			}
 			h.Accept(msg)
 		}

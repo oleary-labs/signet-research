@@ -6,9 +6,9 @@ toolchain go1.24.10
 
 require (
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
+	github.com/fxamacker/cbor/v2 v2.4.0
 	github.com/libp2p/go-libp2p v0.47.0
 	github.com/libp2p/go-libp2p-kad-dht v0.37.1
-	github.com/libp2p/go-libp2p-pubsub v0.15.0
 	github.com/luxfi/threshold v1.0.1
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/stretchr/testify v1.11.1
@@ -16,6 +16,8 @@ require (
 	golang.org/x/crypto v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+replace github.com/luxfi/threshold => ./threshold-local
 
 require (
 	github.com/benbjohnson/clock v1.3.5 // indirect
@@ -27,15 +29,12 @@ require (
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/filecoin-project/go-clock v0.1.0 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
-	github.com/fxamacker/cbor/v2 v2.4.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
-	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/ipfs/boxo v0.35.2 // indirect
