@@ -7,16 +7,18 @@ import (
 	"github.com/luxfi/threshold/internal/round"
 	"github.com/luxfi/threshold/internal/types"
 	"github.com/luxfi/threshold/pkg/math/curve"
-	"github.com/luxfi/threshold/pkg/math/polynomial"
 	"github.com/luxfi/threshold/pkg/party"
 )
 
-// round2 receives commitments and sends shares
+// round2 receives P2P shares sent by all parties during round 1's Finalize.
+// By the time the handler activates round2, all N-1 incoming shares are already
+// buffered (they were sent as RoundNumber=2 messages during round 1), so Finalize
+// is called exactly once with all data present and returns round3 immediately.
 type round2 struct {
 	*round.Helper
 
-	// Our polynomial from round 1
-	poly *polynomial.Polynomial
+	// selfShare is f_self(self), pre-computed in round 1 so we don't need poly here.
+	selfShare curve.Scalar
 
 	// Commitments from all parties: commitments[i][j] = g^f_i(j)
 	commitments map[party.ID]map[party.ID]curve.Point
@@ -24,7 +26,7 @@ type round2 struct {
 	// Chain keys from all parties
 	chainKeys map[party.ID]types.RID
 
-	// Shares we receive - using sync.Map for thread safety
+	// Shares we receive from other parties via StoreMessage
 	shares sync.Map // map[party.ID]curve.Scalar
 }
 
@@ -33,9 +35,6 @@ type message2 struct {
 	// Share encoded as binary for CBOR compatibility
 	Share []byte
 }
-
-// Round2 doesn't broadcast, so we don't implement BroadcastContent
-// This ensures round2 doesn't implement the BroadcastRound interface
 
 // Number implements round.Round
 func (r *round2) Number() round.Number {
@@ -70,13 +69,12 @@ func (r *round2) VerifyMessage(msg round.Message) error {
 		return errors.New("invalid share encoding")
 	}
 
-	// Verify share against commitment
+	// Verify share against commitment: check g^share == commitments[from][self]
 	commitments, ok := r.commitments[from]
 	if !ok {
 		return errors.New("missing commitments from sender")
 	}
 
-	// Check g^share = commitment[to]
 	expectedCommitment, ok := commitments[to]
 	if !ok {
 		return errors.New("missing commitment for our ID")
@@ -92,74 +90,36 @@ func (r *round2) VerifyMessage(msg round.Message) error {
 
 // StoreMessage implements round.Round
 func (r *round2) StoreMessage(msg round.Message) error {
-	from := msg.From
 	body := msg.Content.(*message2)
 
-	// Unmarshal the share
 	share := r.Group().NewScalar()
 	if err := share.UnmarshalBinary(body.Share); err != nil {
 		return errors.New("invalid share encoding")
 	}
 
-	// Store using sync.Map for thread safety
-	r.shares.Store(from, share)
+	r.shares.Store(msg.From, share)
 	return nil
 }
 
-// Finalize implements round.Round
+// Finalize implements round.Round.
+// Called once all N-1 round-2 P2P messages have been received by the handler.
+// Combines the received shares with our own self share and advances to round3.
 func (r *round2) Finalize(out chan<- *round.Message) (round.Session, error) {
-	// Check if we've already sent shares
-	_, hasSelfShare := r.shares.Load(r.SelfID())
+	shares := make(map[party.ID]curve.Scalar, r.N())
 
-	// First time: Send shares to each party
-	if !hasSelfShare {
-		for _, id := range r.OtherPartyIDs() {
-			x := id.Scalar(r.Group())
-			share := r.poly.Evaluate(x)
+	// Add our own share (pre-computed in round1).
+	shares[r.SelfID()] = r.selfShare
 
-			// Marshal the share for CBOR
-			shareBytes, err := share.MarshalBinary()
-			if err != nil {
-				return nil, errors.New("failed to marshal share")
-			}
-
-			if err := r.SendMessage(out, &message2{
-				Share: shareBytes,
-			}, id); err != nil {
-				return nil, err
-			}
-		}
-
-		// Our own share
-		ownX := r.SelfID().Scalar(r.Group())
-		r.shares.Store(r.SelfID(), r.poly.Evaluate(ownX))
-
-		// Return self to wait for incoming shares
-		return r, nil
-	}
-
-	// Count the number of shares we have
-	shareCount := 0
-	r.shares.Range(func(_, _ interface{}) bool {
-		shareCount++
-		return true
-	})
-
-	// Check if we have all shares before advancing
-	if shareCount < r.N() {
-		// Still waiting for shares
-		return r, nil
-	}
-
-	// Convert sync.Map back to regular map for round3
-	shares := make(map[party.ID]curve.Scalar)
+	// Collect shares from the other N-1 parties (already stored by StoreMessage).
 	r.shares.Range(func(key, value interface{}) bool {
-		id := key.(party.ID)
-		shares[id] = value.(curve.Scalar)
+		shares[key.(party.ID)] = value.(curve.Scalar)
 		return true
 	})
 
-	// We have all shares, advance to round3
+	if len(shares) != r.N() {
+		return nil, errors.New("round2 finalize: missing shares")
+	}
+
 	return &round3{
 		Helper:      r.Helper,
 		commitments: r.commitments,
@@ -167,7 +127,3 @@ func (r *round2) Finalize(out chan<- *round.Message) (round.Session, error) {
 		shares:      shares,
 	}, nil
 }
-
-// Note: Round2 processes the broadcasts that were sent in round1.
-// The broadcasts are already stored in the handler and passed to round2
-// when it's created.

@@ -13,7 +13,7 @@ import (
 	"github.com/luxfi/threshold/pkg/party"
 	"github.com/luxfi/threshold/pkg/pool"
 	"github.com/luxfi/threshold/pkg/protocol"
-	"github.com/luxfi/threshold/protocols/cmp"
+	"github.com/luxfi/threshold/protocols/lss"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -84,7 +84,7 @@ func TestLibp2pKeygen(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			startFunc := cmp.Keygen(curve.Secp256k1{}, pid, parties, threshold, pl)
+			startFunc := lss.Keygen(curve.Secp256k1{}, pid, parties, threshold, pl)
 			handler, err := protocol.NewMultiHandler(startFunc, []byte(sessionID))
 			if err != nil {
 				mu.Lock()
@@ -119,8 +119,8 @@ func TestLibp2pKeygen(t *testing.T) {
 		result, ok := results[pid]
 		require.True(t, ok, "party %s has no result", pid)
 
-		config, ok := result.(*cmp.Config)
-		require.True(t, ok, "party %s result is not *cmp.Config", pid)
+		config, ok := result.(*lss.Config)
+		require.True(t, ok, "party %s result is not *lss.Config", pid)
 		assert.NotNil(t, config, "party %s config is nil", pid)
 		t.Logf("party %s: keygen complete", pid)
 	}
@@ -197,8 +197,8 @@ func TestLibp2pSign(t *testing.T) {
 	}
 }
 
-// runKeygen runs a CMP keygen session across all hosts and returns each party's config.
-func runKeygen(t *testing.T, ctx context.Context, hosts []*network.Host, parties []party.ID, threshold int) map[party.ID]*cmp.Config {
+// runKeygen runs an LSS keygen session across all hosts and returns each party's config.
+func runKeygen(t *testing.T, ctx context.Context, hosts []*network.Host, parties []party.ID, threshold int) map[party.ID]*lss.Config {
 	t.Helper()
 	sessionID := "test-keygen"
 	pl := pool.NewPool(0)
@@ -217,7 +217,7 @@ func runKeygen(t *testing.T, ctx context.Context, hosts []*network.Host, parties
 	}()
 
 	var mu sync.Mutex
-	configs := make(map[party.ID]*cmp.Config)
+	configs := make(map[party.ID]*lss.Config)
 	errs := make(map[party.ID]error)
 	var wg sync.WaitGroup
 
@@ -226,7 +226,7 @@ func runKeygen(t *testing.T, ctx context.Context, hosts []*network.Host, parties
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			startFunc := cmp.Keygen(curve.Secp256k1{}, pid, parties, threshold, pl)
+			startFunc := lss.Keygen(curve.Secp256k1{}, pid, parties, threshold, pl)
 			handler, err := protocol.NewMultiHandler(startFunc, []byte(sessionID))
 			if err != nil {
 				mu.Lock()
@@ -240,7 +240,7 @@ func runKeygen(t *testing.T, ctx context.Context, hosts []*network.Host, parties
 			if err != nil {
 				errs[pid] = err
 			} else {
-				configs[pid] = result.(*cmp.Config)
+				configs[pid] = result.(*lss.Config)
 			}
 			mu.Unlock()
 		}()
@@ -255,10 +255,10 @@ func runKeygen(t *testing.T, ctx context.Context, hosts []*network.Host, parties
 	return configs
 }
 
-// runSign runs a CMP signing session and returns each signer's signature.
+// runSign runs an LSS signing session and returns each signer's signature.
 // hostByParty maps each party.ID to the network.Host that owns that identity,
 // so the correct host is used regardless of how party.NewIDSlice sorts the IDs.
-func runSign(t *testing.T, ctx context.Context, hostByParty map[party.ID]*network.Host, signers party.IDSlice, configs map[party.ID]*cmp.Config, messageHash []byte) map[party.ID]*ecdsa.Signature {
+func runSign(t *testing.T, ctx context.Context, hostByParty map[party.ID]*network.Host, signers party.IDSlice, configs map[party.ID]*lss.Config, messageHash []byte) map[party.ID]*ecdsa.Signature {
 	t.Helper()
 	sessionID := "test-sign"
 	pl := pool.NewPool(0)
@@ -286,7 +286,7 @@ func runSign(t *testing.T, ctx context.Context, hostByParty map[party.ID]*networ
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			startFunc := cmp.Sign(configs[pid], signers, messageHash, pl)
+			startFunc := lss.Sign(configs[pid], signers, messageHash, pl)
 			handler, err := protocol.NewMultiHandler(startFunc, []byte(sessionID))
 			if err != nil {
 				mu.Lock()

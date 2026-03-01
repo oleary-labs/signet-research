@@ -13,22 +13,38 @@ import (
 	"github.com/luxfi/threshold/pkg/party"
 )
 
-// round1 generates polynomial and broadcasts commitments
+// round1 generates a polynomial, broadcasts commitments, and (once all N-1
+// commitment broadcasts have been received) sends P2P shares.
+//
+// Finalize is called by the handler with no message-count guard for BroadcastRound
+// rounds that have no P2P messages (the "broadcasts[self]==nil skips the check"
+// logic in hasAllMessages).  To handle this correctly Finalize:
+//
+//  1. Sends our commitment broadcast exactly once (first call).
+//  2. Returns self until all N-1 other parties' broadcasts are stored (via
+//     StoreBroadcastMessage).
+//  3. On the final call (all N commitments present), sends P2P shares
+//     (labelled RoundNumber=2 so the receiving handler buffers them for round2)
+//     and returns round2.
+//
+// Round2 therefore always receives its full commitments map and has all N-1
+// incoming P2P shares buffered before its own Finalize is ever called.
 type round1 struct {
 	*round.Helper
 
-	// Our polynomial for secret sharing
-	poly *polynomial.Polynomial
+	// poly and chainKey are generated on the first Finalize call and reused.
+	// Finalize is serialized by the handler (via finalized.LoadOrStore), so
+	// plain (non-atomic) fields are safe here.
+	poly          *polynomial.Polynomial
+	chainKey      types.RID
+	broadcastSent bool
 
-	// Chain key for deriving randomness
-	chainKey types.RID
+	// commitments we compute for all parties once poly is known
+	localCommitments map[party.ID]curve.Point
 
 	// Storage for received broadcasts - using sync.Map for thread safety
 	receivedCommitments sync.Map // map[party.ID]map[party.ID]curve.Point
 	receivedChainKeys   sync.Map // map[party.ID]types.RID
-
-	// Track if we've already generated our values to prevent regeneration
-	generated bool
 }
 
 // broadcast1 contains the polynomial commitments
@@ -79,9 +95,8 @@ func (r *round1) Number() round.Number {
 	return 1
 }
 
-// MessageContent implements round.Round
+// MessageContent implements round.Round — round1 has no incoming P2P messages.
 func (r *round1) MessageContent() round.Content {
-	// Round1 only broadcasts, no P2P messages
 	return nil
 }
 
@@ -92,117 +107,131 @@ func (broadcast1) RoundNumber() round.Number {
 
 // VerifyMessage implements round.Round
 func (r *round1) VerifyMessage(_ round.Message) error {
-	// No P2P messages to verify
-	return nil
+	return nil // No P2P messages in round 1
 }
 
 // StoreMessage implements round.Round
 func (r *round1) StoreMessage(_ round.Message) error {
-	// No P2P messages to store
-	return nil
+	return nil // No P2P messages in round 1
 }
 
-// Finalize implements round.Round
+// Finalize implements round.Round.
+//
+// Phase 1 (first call, or any call before all N-1 broadcasts arrive):
+//   - Generate our polynomial and chain key (once).
+//   - Send our commitment broadcast (once).
+//   - Return self if fewer than N total entries are in receivedCommitments.
+//
+// Phase 2 (all N entries present):
+//   - Collect all commitments.
+//   - Send P2P shares to each other party as RoundNumber=2 messages (buffered
+//     by the receiving handler until round2 activates).
+//   - Return round2 with the full commitments map.
 func (r *round1) Finalize(out chan<- *round.Message) (round.Session, error) {
-	// Only generate values once to prevent different values on repeated calls
-	if !r.generated {
-		r.generated = true
-
-		// Generate our polynomial with random secret
+	// --- Phase 1a: generate polynomial and chain key (once) ---
+	if r.poly == nil {
 		secret := sample.Scalar(rand.Reader, r.Group())
 		r.poly = polynomial.NewPolynomial(r.Group(), r.Threshold()-1, secret)
 
-		// Generate chain key
 		chainKey, err := types.NewRID(rand.Reader)
 		if err != nil {
 			return nil, err
 		}
 		r.chainKey = chainKey
 
-		// Create commitments: g^f(j) for each party j
-		// This allows verification of shares later
-		commitments := make(map[party.ID]curve.Point)
+		// Pre-compute commitments: g^f(j) for each party j.
+		r.localCommitments = make(map[party.ID]curve.Point)
 		for _, j := range r.PartyIDs() {
 			x := j.Scalar(r.Group())
 			share := r.poly.Evaluate(x)
-			commitments[j] = share.ActOnBase()
+			r.localCommitments[j] = share.ActOnBase()
 		}
 
-		// Broadcast commitments
-		broadcast := &broadcast1{ChainKey: chainKey}
-		if err := broadcast.SetCommitments(commitments); err != nil {
+		// Store our own data so StoreBroadcastMessage won't overwrite it and
+		// the count below includes us from the very first call.
+		r.receivedCommitments.Store(r.SelfID(), r.localCommitments)
+		r.receivedChainKeys.Store(r.SelfID(), r.chainKey)
+	}
+
+	// --- Phase 1b: send our commitment broadcast (once) ---
+	if !r.broadcastSent {
+		broadcast := &broadcast1{ChainKey: r.chainKey}
+		if err := broadcast.SetCommitments(r.localCommitments); err != nil {
 			return nil, err
 		}
 		if err := r.BroadcastMessage(out, broadcast); err != nil {
 			return nil, err
 		}
-
-		// Store our own commitments using sync.Map
-		r.receivedCommitments.Store(r.SelfID(), commitments)
-		r.receivedChainKeys.Store(r.SelfID(), chainKey)
+		r.broadcastSent = true
 	}
 
-	// Check if we have received all commitments
-	// We need commitments from all N parties (including ourselves)
-	// Count the number of stored entries
+	// --- Check: wait until all N-1 other parties' broadcasts have arrived ---
 	count := 0
 	r.receivedCommitments.Range(func(_, _ interface{}) bool {
 		count++
 		return true
 	})
-
 	if count < r.N() {
-		// Not ready to advance yet - return ourselves
-		// This is called from finalizeInitial when we don't have all broadcasts yet
+		// Not all broadcasts received yet; the handler will re-drive via
+		// tryAdvanceRound when the next broadcast arrives.
 		return r, nil
 	}
 
-	// We have all commitments, convert sync.Map back to regular map for round2
-	commitments := make(map[party.ID]map[party.ID]curve.Point)
-	chainKeys := make(map[party.ID]types.RID)
-
+	// --- Phase 2: all commitments collected — send P2P shares and advance ---
+	allCommitments := make(map[party.ID]map[party.ID]curve.Point)
+	allChainKeys := make(map[party.ID]types.RID)
 	r.receivedCommitments.Range(func(key, value interface{}) bool {
-		id := key.(party.ID)
-		commitments[id] = value.(map[party.ID]curve.Point)
+		allCommitments[key.(party.ID)] = value.(map[party.ID]curve.Point)
 		return true
 	})
-
 	r.receivedChainKeys.Range(func(key, value interface{}) bool {
-		id := key.(party.ID)
-		chainKeys[id] = value.(types.RID)
+		allChainKeys[key.(party.ID)] = value.(types.RID)
 		return true
 	})
 
-	// Create round2 with complete data
+	// Send P2P shares to each other party as round-2 messages.
+	// The receiving handler buffers these until round2 activates, at which
+	// point all inputs are immediately available.
+	for _, j := range r.OtherPartyIDs() {
+		x := j.Scalar(r.Group())
+		share := r.poly.Evaluate(x)
+		shareBytes, err := share.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		if err := r.SendMessage(out, &message2{Share: shareBytes}, j); err != nil {
+			return nil, err
+		}
+	}
+
+	// Compute our own share f_self(self) to pass directly to round2.
+	selfX := r.SelfID().Scalar(r.Group())
+	selfShare := r.poly.Evaluate(selfX)
+
 	return &round2{
 		Helper:      r.Helper,
-		poly:        r.poly,
-		commitments: commitments,
-		chainKeys:   chainKeys,
-		shares:      sync.Map{}, // Initialize as sync.Map
+		commitments: allCommitments,
+		chainKeys:   allChainKeys,
+		selfShare:   selfShare,
 	}, nil
 }
 
 // StoreBroadcastMessage implements round.BroadcastRound
 func (r *round1) StoreBroadcastMessage(msg round.Message) error {
-	// Validate the broadcast message
 	body, ok := msg.Content.(*broadcast1)
 	if !ok || body == nil {
 		return round.ErrInvalidContent
 	}
 
-	// Basic validation
 	if len(body.Commitments) != r.N() {
 		return errors.New("wrong number of commitments")
 	}
 
-	// Convert back to map and store
 	commitments, err := body.GetCommitments(r.Group())
 	if err != nil {
 		return err
 	}
 
-	// Store using sync.Map for thread safety
 	r.receivedCommitments.Store(msg.From, commitments)
 	r.receivedChainKeys.Store(msg.From, body.ChainKey)
 

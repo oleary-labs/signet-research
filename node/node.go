@@ -19,7 +19,7 @@ import (
 
 	"github.com/luxfi/threshold/pkg/party"
 	"github.com/luxfi/threshold/pkg/pool"
-	"github.com/luxfi/threshold/protocols/cmp"
+	"github.com/luxfi/threshold/protocols/lss"
 
 	"signet/network"
 )
@@ -35,7 +35,7 @@ type Node struct {
 
 	pool    *pool.Pool
 	mu      sync.RWMutex
-	configs map[string]*cmp.Config // keygen session ID → key config
+	configs map[string]*lss.Config // keygen session ID → key config
 }
 
 // NodeInfo is returned by the /v1/info endpoint.
@@ -91,7 +91,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		ctx:     ctx,
 		cancel:  cancel,
 		pool:    pool.NewPool(0),
-		configs: make(map[string]*cmp.Config),
+		configs: make(map[string]*lss.Config),
 	}
 
 	n.registerCoordHandler()
@@ -184,8 +184,10 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	entries := make([]keyEntry, 0, len(n.configs))
 	for id, cfg := range n.configs {
 		ethAddr := ""
-		if addr, err := network.EthereumAddressFromPoint(cfg.PublicPoint()); err == nil {
-			ethAddr = "0x" + hex.EncodeToString(addr[:])
+		if pub, err := cfg.PublicPoint(); err == nil {
+			if addr, err := network.EthereumAddressFromPoint(pub); err == nil {
+				ethAddr = "0x" + hex.EncodeToString(addr[:])
+			}
 		}
 		ids := cfg.PartyIDs()
 		parties := make([]string, len(ids))
@@ -228,7 +230,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// party.NewIDSlice sorts the slice, as required by the CMP protocol.
+	// party.NewIDSlice sorts the slice, as required by the LSS protocol.
 	sortedParties := party.NewIDSlice(req.Parties)
 
 	n.log.Info("keygen starting",
@@ -271,7 +273,11 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 	n.configs[req.SessionID] = cfg
 	n.mu.Unlock()
 
-	pub := cfg.PublicPoint()
+	pub, err := cfg.PublicPoint()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "public point: "+err.Error())
+		return
+	}
 	pubBytes, err := pub.MarshalBinary()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "marshal public key: "+err.Error())
@@ -330,6 +336,10 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid message_hash: "+err.Error())
 		return
 	}
+	if len(msgHash) != 32 {
+		httpError(w, http.StatusBadRequest, "message_hash must be exactly 32 bytes (64 hex chars)")
+		return
+	}
 
 	// Load config: memory-first, then disk.
 	n.mu.RLock()
@@ -350,11 +360,17 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		n.mu.Unlock()
 	}
 
-	// Validate signer set (sorted, threshold met, this node included).
+	// Validate signer set: sorted, threshold met, no duplicates, self included, all parties known.
 	sortedSigners := party.NewIDSlice(req.Signers)
-	if !cfg.CanSign(sortedSigners) {
-		httpError(w, http.StatusBadRequest, "invalid signer set: threshold not met, unknown party, or this node not included")
+	if !sortedSigners.Valid() || len(sortedSigners) < cfg.Threshold || !sortedSigners.Contains(cfg.ID) {
+		httpError(w, http.StatusBadRequest, "invalid signer set: threshold not met, duplicates, or this node not included")
 		return
+	}
+	for _, j := range sortedSigners {
+		if _, ok := cfg.Public[j]; !ok {
+			httpError(w, http.StatusBadRequest, "invalid signer set: unknown party "+string(j))
+			return
+		}
 	}
 
 	n.log.Info("sign starting",

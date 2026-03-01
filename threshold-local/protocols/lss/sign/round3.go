@@ -9,6 +9,25 @@ import (
 	"github.com/luxfi/threshold/pkg/party"
 )
 
+// verifyThreshold checks our Schnorr-style threshold signature:
+//
+//	s·G == R + (r·m)·X
+//
+// where r = R.XScalar(), m = FromHash(hash), and s = Σ s_i from all parties.
+// This matches the partial-sig formula s_i = k_i + r·λ_i·x_i·m.
+func verifyThreshold(s curve.Scalar, R curve.Point, X curve.Point, hash []byte) bool {
+	group := X.Curve()
+	r := R.XScalar()
+	if r.IsZero() || s.IsZero() {
+		return false
+	}
+	m := curve.FromHash(group, hash)
+	sG := s.ActOnBase()
+	rm := group.NewScalar().Set(r).Mul(m)
+	expected := R.Add(rm.Act(X))
+	return sG.Equal(expected)
+}
+
 // round3 combines partial signatures
 type round3 struct {
 	*round2
@@ -64,25 +83,36 @@ func (r *round3) Finalize(_ chan<- *round.Message) (round.Session, error) {
 		S: s,
 	}
 
-	// Optionally verify the signature against the public key
+	// Verify using the threshold Schnorr equation: s·G = R + r·m·X
 	publicKey, err := r.config.PublicPoint()
 	if err != nil {
 		return nil, err
 	}
 
-	if !sig.Verify(publicKey, r.messageHash) {
+	if !verifyThreshold(s, r.R, publicKey, r.messageHash) {
 		return nil, errors.New("signature verification failed")
 	}
 
 	return r.ResultRound(sig), nil
 }
 
-// StoreBroadcastMessage implements round.BroadcastRound
+// StoreBroadcastMessage implements round.BroadcastRound.
+// This should not be called in normal operation (partialSigs are passed from round2),
+// but is kept for interface compatibility.
 func (r *round3) StoreBroadcastMessage(msg round.Message) error {
 	from := msg.From
 	body, ok := msg.Content.(*broadcast2)
 	if !ok || body == nil {
 		return round.ErrInvalidContent
+	}
+
+	if len(body.PartialSigBytes) == 0 {
+		return errors.New("nil partial signature")
+	}
+
+	sig := r.Group().NewScalar()
+	if err := sig.UnmarshalBinary(body.PartialSigBytes); err != nil {
+		return errors.New("invalid partial signature encoding")
 	}
 
 	// Verify sender is a signer
@@ -97,8 +127,6 @@ func (r *round3) StoreBroadcastMessage(msg round.Message) error {
 		return errors.New("sender not in signers list")
 	}
 
-	// Store partial signature
-	r.partialSigs[from] = body.PartialSig
-
+	r.partialSigs[from] = sig
 	return nil
 }
