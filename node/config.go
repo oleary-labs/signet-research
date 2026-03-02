@@ -8,7 +8,7 @@ import (
 
 // Config holds all configuration for a signet node.
 type Config struct {
-	KeyFile        string   `yaml:"key_file"`
+	DataDir        string   `yaml:"data_dir"`
 	ListenAddr     string   `yaml:"listen_addr"`
 	APIAddr        string   `yaml:"api_addr"`
 	AnnounceAddr   string   `yaml:"announce_addr"`
@@ -20,7 +20,7 @@ type Config struct {
 // If the file does not exist, defaults are returned with no error.
 func LoadConfig(path string) (*Config, error) {
 	cfg := &Config{
-		KeyFile:    "./data/node.key",
+		DataDir:    "./data",
 		ListenAddr: "/ip4/0.0.0.0/tcp/9000",
 		APIAddr:    ":8080",
 		NodeType:   "public",

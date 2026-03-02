@@ -79,8 +79,8 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 					zap.String("session_id", msg.SessionID), zap.Error(err))
 				return
 			}
-			if err := saveConfig(n.keyConfigPath(msg.SessionID), cfg); err != nil {
-				n.log.Warn("coord: persist config",
+			if err := n.store.Put(msg.SessionID, cfg); err != nil {
+				n.log.Warn("coord: persist shard",
 					zap.String("session_id", msg.SessionID), zap.Error(err))
 			}
 			n.mu.Lock()
@@ -102,23 +102,19 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 			defer sn.Close()
 			n.log.Info("coord: sign started", zap.String("sign_session_id", msg.SignSessionID))
 
-			n.mu.RLock()
-			cfg, ok := n.configs[msg.KeySessionID]
-			n.mu.RUnlock()
-			if !ok {
-				var err error
-				cfg, err = loadConfig(n.keyConfigPath(msg.KeySessionID))
-				if err != nil {
-					n.log.Error("coord: load config",
-						zap.String("key_session_id", msg.KeySessionID), zap.Error(err))
-					return
-				}
-				n.mu.Lock()
-				n.configs[msg.KeySessionID] = cfg
-				n.mu.Unlock()
+			cfg, err := n.cachedConfig(msg.KeySessionID)
+			if err != nil {
+				n.log.Error("coord: load config",
+					zap.String("key_session_id", msg.KeySessionID), zap.Error(err))
+				return
+			}
+			if cfg == nil {
+				n.log.Error("coord: key session not found",
+					zap.String("key_session_id", msg.KeySessionID))
+				return
 			}
 
-			_, err := runSignOn(n.ctx, n.host, sn, msg.SignSessionID, cfg, msg.Signers, msg.MessageHash, n.pool)
+			_, err = runSignOn(n.ctx, n.host, sn, msg.SignSessionID, cfg, msg.Signers, msg.MessageHash, n.pool)
 			if err != nil {
 				n.log.Error("coord: sign failed",
 					zap.String("sign_session_id", msg.SignSessionID), zap.Error(err))

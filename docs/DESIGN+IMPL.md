@@ -23,4 +23,14 @@ Important characteristics of intended design:
 
 TODO
 * implement the event-driven fix and remove the artificial sleep
-* implement pre-signing for CMP
+* BUG: protocol hangs / spins if requested key does not exist
+
+
+DATA MANAGEMENT
+* the node config should have a parameter that refers to the data directory of the node.
+  * the config parameter will be 'data_dir'
+* all data artifacts will be stored under this directory.
+  * necessary child file names in the data directory will be picked by the implementation
+  * the current node key file will be named 'node.key'
+  * we will use the bbolt library to store key shard data.
+  * the key shards will be stored in a file named 'keyshards.db'

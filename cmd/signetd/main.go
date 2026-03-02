@@ -29,7 +29,7 @@ func main() {
 	// Write a default config file if none exists.
 	if _, err := os.Stat(*configPath); os.IsNotExist(err) {
 		defaults := &node.Config{
-			KeyFile:    "./data/node.key",
+			DataDir:    "./data",
 			ListenAddr: "/ip4/0.0.0.0/tcp/9000",
 			APIAddr:    ":8080",
 			NodeType:   "public",

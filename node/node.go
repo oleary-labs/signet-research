@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -34,8 +33,9 @@ type Node struct {
 	cancel context.CancelFunc
 
 	pool    *pool.Pool
+	store   *KeyShardStore
 	mu      sync.RWMutex
-	configs map[string]*lss.Config // keygen session ID → key config
+	configs map[string]*lss.Config // in-memory cache: keygen session ID → key config
 }
 
 // NodeInfo is returned by the /v1/info endpoint.
@@ -51,27 +51,40 @@ type NodeInfo struct {
 func New(cfg *Config, log *zap.Logger) (*Node, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	if err := os.MkdirAll(filepath.Dir(cfg.KeyFile), 0700); err != nil {
+	if _, err := os.Stat(cfg.DataDir); err != nil {
 		cancel()
-		return nil, fmt.Errorf("create key dir: %w", err)
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("data directory does not exist: %s", cfg.DataDir)
+		}
+		return nil, fmt.Errorf("stat data dir: %w", err)
 	}
 
-	h, err := network.NewHostFromFile(ctx, cfg.KeyFile, cfg.ListenAddr)
+	keyFile := filepath.Join(cfg.DataDir, "node.key")
+	h, err := network.NewHostFromFile(ctx, keyFile, cfg.ListenAddr)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("create host: %w", err)
+	}
+
+	store, err := openKeyShardStore(cfg.DataDir)
+	if err != nil {
+		h.Close()
+		cancel()
+		return nil, fmt.Errorf("open key shard store: %w", err)
 	}
 
 	// Dial each bootstrap peer; connection failures are non-fatal.
 	for _, bpStr := range cfg.BootstrapPeers {
 		maddr, err := ma.NewMultiaddr(bpStr)
 		if err != nil {
+			store.Close()
 			h.Close()
 			cancel()
 			return nil, fmt.Errorf("parse bootstrap peer %q: %w", bpStr, err)
 		}
 		pi, err := peer.AddrInfoFromP2pAddr(maddr)
 		if err != nil {
+			store.Close()
 			h.Close()
 			cancel()
 			return nil, fmt.Errorf("addr info from %q: %w", bpStr, err)
@@ -91,6 +104,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		ctx:     ctx,
 		cancel:  cancel,
 		pool:    pool.NewPool(0),
+		store:   store,
 		configs: make(map[string]*lss.Config),
 	}
 
@@ -118,7 +132,8 @@ func (n *Node) Start() error {
 	return nil
 }
 
-// Stop gracefully shuts down the HTTP server, the libp2p host, and the worker pool.
+// Stop gracefully shuts down the HTTP server, the libp2p host, the worker pool,
+// and the key shard store.
 func (n *Node) Stop() error {
 	n.log.Info("stopping node")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -128,6 +143,9 @@ func (n *Node) Stop() error {
 	}
 	n.pool.TearDown()
 	n.host.Close()
+	if err := n.store.Close(); err != nil {
+		n.log.Warn("close key shard store", zap.Error(err))
+	}
 	n.cancel()
 	n.log.Info("node stopped")
 	return nil
@@ -154,9 +172,28 @@ func (n *Node) Info() NodeInfo {
 	}
 }
 
-// keyConfigPath returns the disk path for a stored keygen config.
-func (n *Node) keyConfigPath(sessionID string) string {
-	return filepath.Join(filepath.Dir(n.cfg.KeyFile), sessionID+".config")
+// cachedConfig returns a config from the in-memory cache, or loads it from the
+// store and caches it. Returns (nil, nil) when the session ID is not found.
+func (n *Node) cachedConfig(sessionID string) (*lss.Config, error) {
+	n.mu.RLock()
+	cfg, ok := n.configs[sessionID]
+	n.mu.RUnlock()
+	if ok {
+		return cfg, nil
+	}
+
+	cfg, err := n.store.Get(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, nil
+	}
+
+	n.mu.Lock()
+	n.configs[sessionID] = cfg
+	n.mu.Unlock()
+	return cfg, nil
 }
 
 // --- HTTP handlers ---
@@ -171,7 +208,7 @@ func (n *Node) handleInfo(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(n.Info())
 }
 
-// handleListKeys returns public metadata for all in-memory keygen configs.
+// handleListKeys returns public metadata for all persisted keygen configs.
 func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	type keyEntry struct {
 		SessionID       string   `json:"session_id"`
@@ -180,18 +217,27 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 		Parties         []string `json:"parties"`
 	}
 
-	n.mu.RLock()
-	entries := make([]keyEntry, 0, len(n.configs))
-	for id, cfg := range n.configs {
+	ids, err := n.store.List()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "list keys: "+err.Error())
+		return
+	}
+
+	entries := make([]keyEntry, 0, len(ids))
+	for _, id := range ids {
+		cfg, err := n.cachedConfig(id)
+		if err != nil || cfg == nil {
+			continue
+		}
 		ethAddr := ""
 		if pub, err := cfg.PublicPoint(); err == nil {
 			if addr, err := network.EthereumAddressFromPoint(pub); err == nil {
 				ethAddr = "0x" + hex.EncodeToString(addr[:])
 			}
 		}
-		ids := cfg.PartyIDs()
-		parties := make([]string, len(ids))
-		for i, p := range ids {
+		partyIDs := cfg.PartyIDs()
+		parties := make([]string, len(partyIDs))
+		for i, p := range partyIDs {
 			parties[i] = string(p)
 		}
 		entries = append(entries, keyEntry{
@@ -201,7 +247,6 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 			Parties:         parties,
 		})
 	}
-	n.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(entries)
@@ -266,8 +311,8 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := saveConfig(n.keyConfigPath(req.SessionID), cfg); err != nil {
-		n.log.Warn("persist config failed", zap.String("session_id", req.SessionID), zap.Error(err))
+	if err := n.store.Put(req.SessionID, cfg); err != nil {
+		n.log.Warn("persist shard failed", zap.String("session_id", req.SessionID), zap.Error(err))
 	}
 	n.mu.Lock()
 	n.configs[req.SessionID] = cfg
@@ -341,23 +386,14 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Load config: memory-first, then disk.
-	n.mu.RLock()
-	cfg, ok := n.configs[req.KeySessionID]
-	n.mu.RUnlock()
-	if !ok {
-		cfg, err = loadConfig(n.keyConfigPath(req.KeySessionID))
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				httpError(w, http.StatusNotFound, "key session not found: "+req.KeySessionID)
-			} else {
-				httpError(w, http.StatusInternalServerError, "load config: "+err.Error())
-			}
-			return
-		}
-		n.mu.Lock()
-		n.configs[req.KeySessionID] = cfg
-		n.mu.Unlock()
+	cfg, err := n.cachedConfig(req.KeySessionID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "load config: "+err.Error())
+		return
+	}
+	if cfg == nil {
+		httpError(w, http.StatusNotFound, "key session not found: "+req.KeySessionID)
+		return
 	}
 
 	// Validate signer set: sorted, threshold met, no duplicates, self included, all parties known.
