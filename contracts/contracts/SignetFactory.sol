@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
+import "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+
+import "./interfaces/ISignetFactory.sol";
+import "./interfaces/ISignetGroup.sol";
+
+/// @title SignetFactory
+/// @notice UUPS-upgradeable factory that maintains a global node registry and
+///         deploys SignetGroup instances via an UpgradeableBeacon.
+contract SignetFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable, ISignetFactory {
+    // -------------------------------------------------------------------------
+    // Constants
+    // -------------------------------------------------------------------------
+
+    uint256 public constant MIN_REMOVAL_DELAY = 1 days;
+
+    // -------------------------------------------------------------------------
+    // State
+    // -------------------------------------------------------------------------
+
+    mapping(address => NodeInfo) public nodes;
+    address[] public registeredNodes;
+
+    address public groupBeacon;
+    address[] public groups;
+    mapping(address => bool) public isGroup;
+
+    // -------------------------------------------------------------------------
+    // Upgrade-safe storage gap
+    // -------------------------------------------------------------------------
+
+    uint256[50] private __gap;
+
+    // -------------------------------------------------------------------------
+    // Initializer
+    // -------------------------------------------------------------------------
+
+    /// @notice One-time initializer (replaces constructor for upgradeable contracts).
+    /// @param admin        Address that will own the factory (and thus the beacon).
+    /// @param groupImpl    Initial SignetGroup implementation address.
+    function initialize(address admin, address groupImpl) external initializer {
+        __Ownable_init(admin);
+        groupBeacon = address(new UpgradeableBeacon(groupImpl, address(this)));
+    }
+
+    // -------------------------------------------------------------------------
+    // Node registry
+    // -------------------------------------------------------------------------
+
+    /// @inheritdoc ISignetFactory
+    function registerNode(bytes calldata pubkey, bool isOpen) external {
+        require(!nodes[msg.sender].registered, "already registered");
+        require(_pubkeyToAddress(pubkey) == msg.sender, "pubkey does not match sender");
+
+        nodes[msg.sender] = NodeInfo({
+            pubkey: pubkey,
+            isOpen: isOpen,
+            registered: true,
+            registeredAt: block.timestamp
+        });
+        registeredNodes.push(msg.sender);
+
+        emit NodeRegistered(msg.sender, pubkey, isOpen);
+    }
+
+    /// @inheritdoc ISignetFactory
+    function updateOpenStatus(bool isOpen) external {
+        require(nodes[msg.sender].registered, "not registered");
+        nodes[msg.sender].isOpen = isOpen;
+        emit NodeOpenStatusChanged(msg.sender, isOpen);
+    }
+
+    /// @inheritdoc ISignetFactory
+    function getNode(address node) external view returns (NodeInfo memory) {
+        return nodes[node];
+    }
+
+    /// @inheritdoc ISignetFactory
+    function getRegisteredNodes() external view returns (address[] memory) {
+        return registeredNodes;
+    }
+
+    // -------------------------------------------------------------------------
+    // Group factory
+    // -------------------------------------------------------------------------
+
+    /// @inheritdoc ISignetFactory
+    function createGroup(
+        address[] calldata nodeAddrs,
+        uint256 threshold,
+        uint256 removalDelay
+    ) external returns (address group) {
+        require(removalDelay >= MIN_REMOVAL_DELAY, "removal delay too short");
+        require(nodeAddrs.length > threshold, "threshold too high for node count");
+
+        bytes memory initData = abi.encodeCall(
+            ISignetGroup.initialize,
+            (msg.sender, nodeAddrs, threshold, removalDelay, address(this))
+        );
+        group = address(new BeaconProxy(groupBeacon, initData));
+
+        groups.push(group);
+        isGroup[group] = true;
+
+        emit GroupCreated(group, msg.sender, threshold);
+    }
+
+    /// @inheritdoc ISignetFactory
+    function upgradeGroupImplementation(address newImpl) external onlyOwner {
+        UpgradeableBeacon(groupBeacon).upgradeTo(newImpl);
+    }
+
+    /// @inheritdoc ISignetFactory
+    function getGroups() external view returns (address[] memory) {
+        return groups;
+    }
+
+    // -------------------------------------------------------------------------
+    // UUPS hook
+    // -------------------------------------------------------------------------
+
+    /// @dev Only the owner may upgrade the factory itself.
+    function _authorizeUpgrade(address) internal override onlyOwner {}
+
+    // -------------------------------------------------------------------------
+    // Internal helpers
+    // -------------------------------------------------------------------------
+
+    /// @dev Derives the Ethereum address from an uncompressed secp256k1 public key.
+    ///      pubkey must be 65 bytes with a 0x04 prefix.
+    function _pubkeyToAddress(bytes calldata pubkey) internal pure returns (address) {
+        require(pubkey.length == 65 && pubkey[0] == 0x04, "invalid uncompressed pubkey");
+        return address(uint160(uint256(keccak256(pubkey[1:65]))));
+    }
+}
