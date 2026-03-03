@@ -34,3 +34,21 @@ DATA MANAGEMENT
   * the current node key file will be named 'node.key'
   * we will use the bbolt library to store key shard data.
   * the key shards will be stored in a file named 'keyshards.db'
+
+SMART CONTRACTS / GROUP + NODE MEMBERSHIP MANAGEMENT
+* A set of Solidity smart contracts will define and manage grouping of nodes that participate in the protocol.
+* There will be a factory contract that allows anyone to create a group. This allows us to control the implementation of the group logic.
+* The group creator can be any user who wants to select a set of nodes to collectively create shared keys and use them for signing.
+* Although the group creator can be anyone, the assumed use case will be an application developer who wants end users to create accounts to interact with their application.
+* The factory should maintain a global list of registered nodes.
+  * Any node operator can register with the factory without permissions.
+  * The registration should validate that the registering account corresponds to the public ID (public key) of the node.
+  * The registered node will also indicate whether they are open to be added to any group who wants them, or whether the node operator can decline to be added to a group.
+* While a group creator can ask for any node to be included in the group - depending on the node operator's choice - it may be necessary for the node operator to accept the inclusion.
+* A group creator or manager can opt to remove a node at anytime. There should be a delay queue for this change.
+* Similarly, a node operator can remove themselves from a group at any time. This should also have a queue to delay the change.
+* The registration and acceptance of nodes should emit appropriate events so that this data can be indexed from the blockchain.
+* Similarly, remove of nodes from groups should emit corresponding events.
+* There should be a method of a group contract that allows for the iteration of all active nodes in the group.
+  * given that there will only ever be a relatively small number of nodes in a group, this can be managed with an array.
+* This group should also define the important parameters of the protocol, such as the required node threshold for keygen and signatures.

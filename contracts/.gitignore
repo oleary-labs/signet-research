@@ -1,2 +1,8 @@
 out/
 cache/
+
+# broadcasts
+!broadcast
+broadcast/*
+broadcast/*/31337/
+
