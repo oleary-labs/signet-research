@@ -249,4 +249,93 @@ contract SignetFactoryTest is PubkeyHelpers {
         vm.expectRevert();  // OwnableUpgradeable emits OwnableUnauthorizedAccount
         factory.upgradeGroupImplementation(address(newImpl));
     }
+
+    // -------------------------------------------------------------------------
+    // getNodeGroups / getNodePubkey
+    // -------------------------------------------------------------------------
+
+    function testGetNodeGroups_Empty() public {
+        assertEq(factory.getNodeGroups(node1).length, 0);
+    }
+
+    function testGetNodePubkey() public {
+        vm.prank(node1); factory.registerNode(pubkey1, true);
+        assertEq(keccak256(factory.getNodePubkey(node1)), keccak256(pubkey1));
+    }
+
+    function testGetNodePubkey_NotRegistered() public {
+        assertEq(factory.getNodePubkey(node1).length, 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // nodeActivated / nodeDeactivated callbacks
+    // -------------------------------------------------------------------------
+
+    function testNodeActivated_OnCreateGroup() public {
+        _registerAll();
+        address[] memory addrs = new address[](3);
+        addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
+
+        address group = factory.createGroup(addrs, 1, 1 days);
+
+        address[] memory g1 = factory.getNodeGroups(node1);
+        assertEq(g1.length, 1);
+        assertEq(g1[0], group);
+
+        address[] memory g2 = factory.getNodeGroups(node2);
+        assertEq(g2.length, 1);
+        assertEq(g2[0], group);
+    }
+
+    function testNodeActivated_NotGroup() public {
+        vm.expectRevert("not a group");
+        factory.nodeActivated(node1);
+    }
+
+    function testNodeDeactivated_OnRemoval() public {
+        _registerAll();
+        address[] memory addrs = new address[](3);
+        addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
+        address group = factory.createGroup(addrs, 1, 1 days);
+
+        assertEq(factory.getNodeGroups(node1).length, 1);
+
+        // address(this) is the manager; queue and execute removal of node1
+        ISignetGroup(group).queueRemoval(node1);
+        vm.warp(block.timestamp + 1 days);
+
+        vm.expectEmit(true, true, false, false);
+        emit ISignetFactory.NodeDeactivatedInGroup(node1, group);
+        ISignetGroup(group).executeRemoval(node1);
+
+        assertEq(factory.getNodeGroups(node1).length, 0);
+        // other nodes still tracked
+        assertEq(factory.getNodeGroups(node2).length, 1);
+    }
+
+    function testNodeDeactivated_NotGroup() public {
+        vm.expectRevert("not a group");
+        factory.nodeDeactivated(node1);
+    }
+
+    function testNodeGroups_MultipleGroups() public {
+        _registerAll();
+        address[] memory addrs = new address[](3);
+        addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
+
+        address group1 = factory.createGroup(addrs, 1, 1 days);
+        address group2 = factory.createGroup(addrs, 1, 1 days);
+
+        address[] memory groups1 = factory.getNodeGroups(node1);
+        assertEq(groups1.length, 2);
+        // both groups present
+        bool foundG1;
+        bool foundG2;
+        for (uint i = 0; i < groups1.length; i++) {
+            if (groups1[i] == group1) foundG1 = true;
+            if (groups1[i] == group2) foundG2 = true;
+        }
+        assertTrue(foundG1);
+        assertTrue(foundG2);
+    }
 }

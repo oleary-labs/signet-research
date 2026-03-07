@@ -52,3 +52,14 @@ SMART CONTRACTS / GROUP + NODE MEMBERSHIP MANAGEMENT
 * There should be a method of a group contract that allows for the iteration of all active nodes in the group.
   * given that there will only ever be a relatively small number of nodes in a group, this can be managed with an array.
 * This group should also define the important parameters of the protocol, such as the required node threshold for keygen and signatures.
+
+NODE STARTUP and GROUP MEMBERSHIP MANAGEMENT
+* When nodes start up they should read their group membership information from a configured blockchain.
+* In order to do this the group factory contract should maintain a mapping from its node id to active groups it is a member of.
+* The mapping in the factory will be maintained from group contracts when nodes become active and inactive.
+* After the node discovers it's current group membership state on startup it will watch blockchain events to dynamically detect when group membership changes.
+* Nodes will keep an internal mapping - in memory - of which groups they belong to and the other nodes in that group.
+* Using this mapping, keygen and signing requests will refer to the id of the group - the groups contract address - when submitting requests. Node will look up the nodes in the group from the mapping.
+* In the keygen and signing api's there should not be a session id. during keygen the caller should specify a key id. the new key will be            
+  generated and stored under that id. the signing api should ask for keys by id. those key names are scoped to the group id. this requires that     
+  storage of node key shard info be scoped by group id and key id.      

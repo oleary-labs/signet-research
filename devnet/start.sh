@@ -2,6 +2,7 @@
 # devnet/start.sh — spin up a local Signet devnet:
 #   • anvil  (local EVM, port 8545)
 #   • SignetFactory deployed and all three nodes registered on-chain
+#   • A SignetGroup created with all three nodes as members
 #   • signetd node{1,2,3} with p2p + HTTP APIs
 
 set -euo pipefail
@@ -46,7 +47,7 @@ go build -o "$BUILD/signetd"     ./cmd/signetd
 go build -o "$BUILD/devnet-init" ./cmd/devnet-init
 
 # --------------------------------------------------------------------------
-# 2. Generate (or load) node identity keys, write configs
+# 2. Generate (or load) node identity keys
 # --------------------------------------------------------------------------
 info "Initialising node keys..."
 
@@ -62,37 +63,6 @@ PUB_1=$(get 0 pubkey);       PUB_2=$(get 1 pubkey);       PUB_3=$(get 2 pubkey)
 echo "    node1  peer=${PEER_1}  eth=${ADDR_1}"
 echo "    node2  peer=${PEER_2}  eth=${ADDR_2}"
 echo "    node3  peer=${PEER_3}  eth=${ADDR_3}"
-
-# Write devnet-local config files (correct peer IDs baked in).
-cat > "$DEVNET/node1.yaml" <<EOF
-data_dir: ./data/node1
-listen_addr: /ip4/0.0.0.0/tcp/9000
-api_addr: :8080
-bootstrap_peers:
-  - /ip4/127.0.0.1/tcp/9001/p2p/${PEER_2}
-  - /ip4/127.0.0.1/tcp/9002/p2p/${PEER_3}
-node_type: public
-EOF
-
-cat > "$DEVNET/node2.yaml" <<EOF
-data_dir: ./data/node2
-listen_addr: /ip4/0.0.0.0/tcp/9001
-api_addr: :8081
-bootstrap_peers:
-  - /ip4/127.0.0.1/tcp/9000/p2p/${PEER_1}
-  - /ip4/127.0.0.1/tcp/9002/p2p/${PEER_3}
-node_type: public
-EOF
-
-cat > "$DEVNET/node3.yaml" <<EOF
-data_dir: ./data/node3
-listen_addr: /ip4/0.0.0.0/tcp/9002
-api_addr: :8082
-bootstrap_peers:
-  - /ip4/127.0.0.1/tcp/9000/p2p/${PEER_1}
-  - /ip4/127.0.0.1/tcp/9001/p2p/${PEER_2}
-node_type: public
-EOF
 
 # --------------------------------------------------------------------------
 # 3. Start Anvil
@@ -172,7 +142,64 @@ for i in 1 2 3; do
 done
 
 # --------------------------------------------------------------------------
-# 6. Start signet nodes
+# 6. Create a signing group with all three nodes (threshold=1, 2-of-3)
+# --------------------------------------------------------------------------
+info "Creating signing group..."
+
+# GroupCreated(address indexed group, address indexed creator, uint256 threshold)
+GROUP_CREATED_TOPIC=$(cast keccak "GroupCreated(address,address,uint256)")
+
+CREATE_RECEIPT=$(cast send \
+    --private-key "$DEPLOYER_PK" \
+    --rpc-url "$RPC" \
+    "$FACTORY" \
+    "createGroup(address[],uint256,uint256)" \
+    "[$ADDR_1,$ADDR_2,$ADDR_3]" 1 86400 \
+    --json)
+
+# topics[1] is the group address zero-padded to 32 bytes; take the last 40 hex chars.
+GROUP_RAW=$(echo "$CREATE_RECEIPT" | jq -r \
+    --arg topic "$GROUP_CREATED_TOPIC" \
+    '.logs[] | select(.topics[0] == $topic) | .topics[1]')
+GROUP="0x${GROUP_RAW: -40}"
+
+[[ -z "$GROUP" || "$GROUP" == "0x" ]] && die "could not parse group address from receipt"
+
+echo "    group: $GROUP"
+
+# --------------------------------------------------------------------------
+# 7. Write node configs (peer IDs, chain RPC, factory and group addresses baked in)
+# --------------------------------------------------------------------------
+info "Writing node configs..."
+
+write_config() {
+    local n="$1" port="$2" api_port="$3"
+    local bp1_peer bp1_port bp2_peer bp2_port
+    case "$n" in
+        1) bp1_peer="$PEER_2"; bp1_port=9001; bp2_peer="$PEER_3"; bp2_port=9002 ;;
+        2) bp1_peer="$PEER_1"; bp1_port=9000; bp2_peer="$PEER_3"; bp2_port=9002 ;;
+        3) bp1_peer="$PEER_1"; bp1_port=9000; bp2_peer="$PEER_2"; bp2_port=9001 ;;
+    esac
+
+    cat > "$DEVNET/node${n}.yaml" <<EOF
+data_dir: ./data/node${n}
+listen_addr: /ip4/0.0.0.0/tcp/${port}
+api_addr: :${api_port}
+bootstrap_peers:
+  - /ip4/127.0.0.1/tcp/${bp1_port}/p2p/${bp1_peer}
+  - /ip4/127.0.0.1/tcp/${bp2_port}/p2p/${bp2_peer}
+node_type: public
+eth_rpc: ${RPC}
+factory_address: ${FACTORY}
+EOF
+}
+
+write_config 1 9000 8080
+write_config 2 9001 8081
+write_config 3 9002 8082
+
+# --------------------------------------------------------------------------
+# 8. Start signet nodes
 # --------------------------------------------------------------------------
 info "Starting signet nodes..."
 
@@ -199,13 +226,14 @@ wait_http "http://localhost:8081/v1/health" "node2"
 wait_http "http://localhost:8082/v1/health" "node3"
 
 # --------------------------------------------------------------------------
-# 7. Write .env summary and print status
+# 9. Write .env summary and print status
 # --------------------------------------------------------------------------
 cat > "$ENV_FILE" <<EOF
 RPC_URL=${RPC}
 FACTORY_ADDRESS=${FACTORY}
 GROUP_BEACON=${BEACON}
 GROUP_IMPL=${GROUP_IMPL}
+GROUP_ADDRESS=${GROUP}
 NODE1_PEER=${PEER_1}
 NODE2_PEER=${PEER_2}
 NODE3_PEER=${PEER_3}
@@ -223,6 +251,7 @@ echo ""
 echo "  Chain RPC : $RPC"
 echo "  Factory   : $FACTORY"
 echo "  Beacon    : $BEACON"
+echo "  Group     : $GROUP  (threshold=1, nodes=3)"
 echo ""
 echo "  node1  eth=${ADDR_1}  api=:8080  p2p=:9000"
 echo "  node2  eth=${ADDR_2}  api=:8081  p2p=:9001"
@@ -232,7 +261,15 @@ echo "  Env file  : devnet/.env"
 echo "  Logs      : devnet/{anvil,node1,node2,node3}.log"
 echo "  Stop      : devnet/stop.sh"
 echo ""
-echo "Quick test (keygen):"
-echo "  curl -s http://localhost:8080/v1/info | jq ."
+echo "Quick test:"
+echo "  source devnet/.env"
+echo ""
+echo "  # Keygen — generate key 'k1' for the group"
 echo "  curl -s -X POST http://localhost:8080/v1/keygen \\"
-echo "    -d '{\"session_id\":\"key1\",\"parties\":[\"${PEER_1}\",\"${PEER_2}\",\"${PEER_3}\"],\"threshold\":1}' | jq ."
+echo "    -H 'Content-Type: application/json' \\"
+echo "    -d '{\"group_id\":\"${GROUP}\",\"key_id\":\"k1\"}' | jq ."
+echo ""
+echo "  # Sign — sign a message with key 'k1'"
+echo "  curl -s -X POST http://localhost:8080/v1/sign \\"
+echo "    -H 'Content-Type: application/json' \\"
+echo "    -d '{\"group_id\":\"${GROUP}\",\"key_id\":\"k1\",\"message_hash\":\"0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"}' | jq ."

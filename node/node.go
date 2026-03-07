@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,19 @@ import (
 	"signet/network"
 )
 
+// shardKey is the composite cache key for a stored key shard.
+type shardKey struct {
+	GroupID string
+	KeyID   string
+}
+
+// GroupInfo holds the resolved membership for a group contract. It is
+// populated at startup by the chain client and kept up to date via events.
+type GroupInfo struct {
+	Threshold int
+	Members   []party.ID // libp2p peer IDs of active members, sorted
+}
+
 // Node owns a libp2p host, an HTTP API server, and threshold signing state.
 type Node struct {
 	cfg    *Config
@@ -35,7 +49,12 @@ type Node struct {
 	pool    *pool.Pool
 	store   *KeyShardStore
 	mu      sync.RWMutex
-	configs map[string]*lss.Config // in-memory cache: keygen session ID → key config
+	configs map[shardKey]*lss.Config // in-memory cache: (group_id, key_id) → key config
+
+	groupsMu sync.RWMutex
+	groups   map[string]*GroupInfo // group contract address → resolved membership
+
+	chain *ChainClient // nil if no eth_rpc configured
 }
 
 // NodeInfo is returned by the /v1/info endpoint.
@@ -105,7 +124,24 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		cancel:  cancel,
 		pool:    pool.NewPool(0),
 		store:   store,
-		configs: make(map[string]*lss.Config),
+		configs: make(map[shardKey]*lss.Config),
+		groups:  make(map[string]*GroupInfo),
+	}
+
+	// Wire the chain client when eth_rpc and factory_address are configured.
+	if cfg.EthRPC != "" && cfg.FactoryAddress != "" {
+		chain, err := newChainClient(cfg, h, n, log)
+		if err != nil {
+			store.Close()
+			h.Close()
+			cancel()
+			return nil, fmt.Errorf("chain client: %w", err)
+		}
+		if err := chain.loadGroups(ctx); err != nil {
+			log.Warn("chain: initial group load failed", zap.Error(err))
+		}
+		chain.start()
+		n.chain = chain
 	}
 
 	n.registerCoordHandler()
@@ -136,6 +172,9 @@ func (n *Node) Start() error {
 // and the key shard store.
 func (n *Node) Stop() error {
 	n.log.Info("stopping node")
+	if n.chain != nil {
+		n.chain.close()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := n.server.Shutdown(ctx); err != nil {
@@ -173,16 +212,18 @@ func (n *Node) Info() NodeInfo {
 }
 
 // cachedConfig returns a config from the in-memory cache, or loads it from the
-// store and caches it. Returns (nil, nil) when the session ID is not found.
-func (n *Node) cachedConfig(sessionID string) (*lss.Config, error) {
+// store and caches it. Returns (nil, nil) when the (groupID, keyID) is not found.
+func (n *Node) cachedConfig(groupID, keyID string) (*lss.Config, error) {
+	k := shardKey{groupID, keyID}
+
 	n.mu.RLock()
-	cfg, ok := n.configs[sessionID]
+	cfg, ok := n.configs[k]
 	n.mu.RUnlock()
 	if ok {
 		return cfg, nil
 	}
 
-	cfg, err := n.store.Get(sessionID)
+	cfg, err := n.store.Get(groupID, keyID)
 	if err != nil {
 		return nil, err
 	}
@@ -191,9 +232,18 @@ func (n *Node) cachedConfig(sessionID string) (*lss.Config, error) {
 	}
 
 	n.mu.Lock()
-	n.configs[sessionID] = cfg
+	n.configs[k] = cfg
 	n.mu.Unlock()
 	return cfg, nil
+}
+
+// randomNonce returns a short random hex string for sign session disambiguation.
+func randomNonce() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // --- HTTP handlers ---
@@ -208,44 +258,64 @@ func (n *Node) handleInfo(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(n.Info())
 }
 
-// handleListKeys returns public metadata for all persisted keygen configs.
+// handleListKeys returns public metadata for all persisted key shards.
+//
+// GET /v1/keys                       — all groups and their keys
+// GET /v1/keys?group_id=0xGroupAddr  — keys for a specific group
 func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	type keyEntry struct {
-		SessionID       string   `json:"session_id"`
+		GroupID         string   `json:"group_id"`
+		KeyID           string   `json:"key_id"`
 		EthereumAddress string   `json:"ethereum_address"`
 		Threshold       int      `json:"threshold"`
 		Parties         []string `json:"parties"`
 	}
 
-	ids, err := n.store.List()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "list keys: "+err.Error())
-		return
+	filterGroup := r.URL.Query().Get("group_id")
+
+	var groupIDs []string
+	if filterGroup != "" {
+		groupIDs = []string{filterGroup}
+	} else {
+		var err error
+		groupIDs, err = n.store.ListGroups()
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "list groups: "+err.Error())
+			return
+		}
 	}
 
-	entries := make([]keyEntry, 0, len(ids))
-	for _, id := range ids {
-		cfg, err := n.cachedConfig(id)
-		if err != nil || cfg == nil {
-			continue
+	entries := make([]keyEntry, 0)
+	for _, gid := range groupIDs {
+		keyIDs, err := n.store.List(gid)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "list keys: "+err.Error())
+			return
 		}
-		ethAddr := ""
-		if pub, err := cfg.PublicPoint(); err == nil {
-			if addr, err := network.EthereumAddressFromPoint(pub); err == nil {
-				ethAddr = "0x" + hex.EncodeToString(addr[:])
+		for _, kid := range keyIDs {
+			cfg, err := n.cachedConfig(gid, kid)
+			if err != nil || cfg == nil {
+				continue
 			}
+			ethAddr := ""
+			if pub, err := cfg.PublicPoint(); err == nil {
+				if addr, err := network.EthereumAddressFromPoint(pub); err == nil {
+					ethAddr = "0x" + hex.EncodeToString(addr[:])
+				}
+			}
+			partyIDs := cfg.PartyIDs()
+			parties := make([]string, len(partyIDs))
+			for i, p := range partyIDs {
+				parties[i] = string(p)
+			}
+			entries = append(entries, keyEntry{
+				GroupID:         gid,
+				KeyID:           kid,
+				EthereumAddress: ethAddr,
+				Threshold:       cfg.Threshold,
+				Parties:         parties,
+			})
 		}
-		partyIDs := cfg.PartyIDs()
-		parties := make([]string, len(partyIDs))
-		for i, p := range partyIDs {
-			parties[i] = string(p)
-		}
-		entries = append(entries, keyEntry{
-			SessionID:       id,
-			EthereumAddress: ethAddr,
-			Threshold:       cfg.Threshold,
-			Parties:         parties,
-		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -256,66 +326,80 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 //
 // POST /v1/keygen
 //
-//	{"session_id":"mykey1","parties":["16Uiu2...","16Uiu2...","16Uiu2..."],"threshold":1}
+//	{"group_id":"0xGroupAddr","key_id":"primary"}
 //
-// Send to any one node in the parties list. That node coordinates with the others
-// automatically; the caller does not need to contact each node separately.
+// The key shard is stored under (group_id, key_id). The group members and
+// threshold are resolved from the node's in-memory group map. Send to any
+// one member of the group; it coordinates with the others automatically.
 func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SessionID string     `json:"session_id"`
-		Parties   []party.ID `json:"parties"`
-		Threshold int        `json:"threshold"`
+		GroupID string `json:"group_id"`
+		KeyID   string `json:"key_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "decode body: "+err.Error())
 		return
 	}
-	if req.SessionID == "" || len(req.Parties) == 0 || req.Threshold <= 0 {
-		httpError(w, http.StatusBadRequest, "session_id, parties (non-empty), and threshold (>0) are required")
+	if req.GroupID == "" || req.KeyID == "" {
+		httpError(w, http.StatusBadRequest, "group_id and key_id are required")
+		return
+	}
+
+	n.groupsMu.RLock()
+	grp, ok := n.groups[req.GroupID]
+	n.groupsMu.RUnlock()
+	if !ok {
+		httpError(w, http.StatusNotFound, "group not found: "+req.GroupID)
 		return
 	}
 
 	// party.NewIDSlice sorts the slice, as required by the LSS protocol.
-	sortedParties := party.NewIDSlice(req.Parties)
+	sortedParties := party.NewIDSlice(grp.Members)
+	sessID := keygenSessionID(req.GroupID, req.KeyID)
 
 	n.log.Info("keygen starting",
-		zap.String("session_id", req.SessionID),
+		zap.String("group_id", req.GroupID),
+		zap.String("key_id", req.KeyID),
 		zap.Int("n", len(sortedParties)),
-		zap.Int("threshold", req.Threshold),
+		zap.Int("threshold", grp.Threshold),
 	)
 
-	// Subscribe to the session topic before notifying peers, so we're ready to
-	// receive GossipSub messages as soon as the mesh forms.
-	sn, err := network.NewSessionNetwork(r.Context(), n.host, req.SessionID, sortedParties)
+	sn, err := network.NewSessionNetwork(r.Context(), n.host, sessID, sortedParties)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "session network: "+err.Error())
 		return
 	}
 	defer sn.Close()
 
-	// Tell every other party to join and start.
 	if err := n.broadcastCoord(r.Context(), sortedParties, coordMsg{
 		Type:      msgKeygen,
-		SessionID: req.SessionID,
+		GroupID:   req.GroupID,
+		KeyID:     req.KeyID,
 		Parties:   sortedParties,
-		Threshold: req.Threshold,
+		Threshold: grp.Threshold,
 	}); err != nil {
 		httpError(w, http.StatusInternalServerError, "coordinate: "+err.Error())
 		return
 	}
 
-	cfg, err := runKeygenOn(r.Context(), n.host, sn, req.SessionID, sortedParties, req.Threshold, n.pool)
+	cfg, err := runKeygenOn(r.Context(), n.host, sn, sessID, sortedParties, grp.Threshold, n.pool)
 	if err != nil {
-		n.log.Error("keygen failed", zap.String("session_id", req.SessionID), zap.Error(err))
+		n.log.Error("keygen failed",
+			zap.String("group_id", req.GroupID),
+			zap.String("key_id", req.KeyID),
+			zap.Error(err))
 		httpError(w, http.StatusInternalServerError, "keygen: "+err.Error())
 		return
 	}
 
-	if err := n.store.Put(req.SessionID, cfg); err != nil {
-		n.log.Warn("persist shard failed", zap.String("session_id", req.SessionID), zap.Error(err))
+	if err := n.store.Put(req.GroupID, req.KeyID, cfg); err != nil {
+		n.log.Warn("persist shard failed",
+			zap.String("group_id", req.GroupID),
+			zap.String("key_id", req.KeyID),
+			zap.Error(err))
 	}
 	n.mu.Lock()
-	n.configs[req.SessionID] = cfg
+	n.configs[shardKey{req.GroupID, req.KeyID}] = cfg
 	n.mu.Unlock()
 
 	pub, err := cfg.PublicPoint()
@@ -335,13 +419,15 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 	}
 
 	n.log.Info("keygen complete",
-		zap.String("session_id", req.SessionID),
+		zap.String("group_id", req.GroupID),
+		zap.String("key_id", req.KeyID),
 		zap.String("eth_addr", "0x"+hex.EncodeToString(ethAddr[:])),
 	)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"session_id":       req.SessionID,
+		"group_id":         req.GroupID,
+		"key_id":           req.KeyID,
 		"public_key":       "0x" + hex.EncodeToString(pubBytes),
 		"ethereum_address": "0x" + hex.EncodeToString(ethAddr[:]),
 	})
@@ -351,28 +437,24 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 //
 // POST /v1/sign
 //
-//	{
-//	  "key_session_id":  "mykey1",
-//	  "sign_session_id": "sign-001",
-//	  "signers":         ["16Uiu2...","16Uiu2..."],
-//	  "message_hash":    "0xdeadbeef..."
-//	}
+//	{"group_id":"0xGroupAddr","key_id":"primary","message_hash":"0xdeadbeef..."}
 //
-// Send to any one node in the signers list. That node coordinates with the others
-// automatically; the caller does not need to contact each node separately.
+// The signing set is all active members of the group, resolved from the
+// node's in-memory group map. Send to any one member; it coordinates with
+// the others automatically. The sign session is disambiguated internally by a
+// random nonce so concurrent sign requests on the same key do not collide.
 func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		KeySessionID  string     `json:"key_session_id"`
-		SignSessionID string     `json:"sign_session_id"`
-		Signers       []party.ID `json:"signers"`
-		MessageHash   string     `json:"message_hash"`
+		GroupID     string `json:"group_id"`
+		KeyID       string `json:"key_id"`
+		MessageHash string `json:"message_hash"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "decode body: "+err.Error())
 		return
 	}
-	if req.KeySessionID == "" || req.SignSessionID == "" || len(req.Signers) == 0 || req.MessageHash == "" {
-		httpError(w, http.StatusBadRequest, "key_session_id, sign_session_id, signers, and message_hash are required")
+	if req.GroupID == "" || req.KeyID == "" || req.MessageHash == "" {
+		httpError(w, http.StatusBadRequest, "group_id, key_id, and message_hash are required")
 		return
 	}
 
@@ -386,36 +468,44 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := n.cachedConfig(req.KeySessionID)
+	n.groupsMu.RLock()
+	grp, ok := n.groups[req.GroupID]
+	n.groupsMu.RUnlock()
+	if !ok {
+		httpError(w, http.StatusNotFound, "group not found: "+req.GroupID)
+		return
+	}
+
+	cfg, err := n.cachedConfig(req.GroupID, req.KeyID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "load config: "+err.Error())
 		return
 	}
 	if cfg == nil {
-		httpError(w, http.StatusNotFound, "key session not found: "+req.KeySessionID)
+		httpError(w, http.StatusNotFound, fmt.Sprintf("key not found: group=%s key=%s", req.GroupID, req.KeyID))
 		return
 	}
 
-	// Validate signer set: sorted, threshold met, no duplicates, self included, all parties known.
-	sortedSigners := party.NewIDSlice(req.Signers)
-	if !sortedSigners.Valid() || len(sortedSigners) < cfg.Threshold || !sortedSigners.Contains(cfg.ID) {
-		httpError(w, http.StatusBadRequest, "invalid signer set: threshold not met, duplicates, or this node not included")
+	sortedSigners := party.NewIDSlice(grp.Members)
+	if !sortedSigners.Contains(cfg.ID) {
+		httpError(w, http.StatusBadRequest, "this node is not a member of group "+req.GroupID)
 		return
 	}
-	for _, j := range sortedSigners {
-		if _, ok := cfg.Public[j]; !ok {
-			httpError(w, http.StatusBadRequest, "invalid signer set: unknown party "+string(j))
-			return
-		}
+
+	nonce, err := randomNonce()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "generate nonce: "+err.Error())
+		return
 	}
+	sessID := signSessionID(req.GroupID, req.KeyID, nonce)
 
 	n.log.Info("sign starting",
-		zap.String("key_session_id", req.KeySessionID),
-		zap.String("sign_session_id", req.SignSessionID),
+		zap.String("group_id", req.GroupID),
+		zap.String("key_id", req.KeyID),
 		zap.Int("signers", len(sortedSigners)),
 	)
 
-	sn, err := network.NewSessionNetwork(r.Context(), n.host, req.SignSessionID, sortedSigners)
+	sn, err := network.NewSessionNetwork(r.Context(), n.host, sessID, sortedSigners)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "session network: "+err.Error())
 		return
@@ -423,19 +513,23 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 	defer sn.Close()
 
 	if err := n.broadcastCoord(r.Context(), sortedSigners, coordMsg{
-		Type:          msgSign,
-		KeySessionID:  req.KeySessionID,
-		SignSessionID: req.SignSessionID,
-		Signers:       sortedSigners,
-		MessageHash:   msgHash,
+		Type:        msgSign,
+		GroupID:     req.GroupID,
+		KeyID:       req.KeyID,
+		SignNonce:   nonce,
+		Signers:     sortedSigners,
+		MessageHash: msgHash,
 	}); err != nil {
 		httpError(w, http.StatusInternalServerError, "coordinate: "+err.Error())
 		return
 	}
 
-	sig, err := runSignOn(r.Context(), n.host, sn, req.SignSessionID, cfg, sortedSigners, msgHash, n.pool)
+	sig, err := runSignOn(r.Context(), n.host, sn, sessID, cfg, sortedSigners, msgHash, n.pool)
 	if err != nil {
-		n.log.Error("sign failed", zap.String("sign_session_id", req.SignSessionID), zap.Error(err))
+		n.log.Error("sign failed",
+			zap.String("group_id", req.GroupID),
+			zap.String("key_id", req.KeyID),
+			zap.Error(err))
 		httpError(w, http.StatusInternalServerError, "sign: "+err.Error())
 		return
 	}
@@ -446,11 +540,15 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n.log.Info("sign complete", zap.String("sign_session_id", req.SignSessionID))
+	n.log.Info("sign complete",
+		zap.String("group_id", req.GroupID),
+		zap.String("key_id", req.KeyID),
+	)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"sign_session_id":    req.SignSessionID,
+		"group_id":           req.GroupID,
+		"key_id":             req.KeyID,
 		"ethereum_signature": "0x" + hex.EncodeToString(ethSig),
 	})
 }

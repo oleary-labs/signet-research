@@ -14,6 +14,8 @@ type Config struct {
 	AnnounceAddr   string   `yaml:"announce_addr"`
 	BootstrapPeers []string `yaml:"bootstrap_peers"`
 	NodeType       string   `yaml:"node_type"`
+	EthRPC         string   `yaml:"eth_rpc"`
+	FactoryAddress string   `yaml:"factory_address"`
 }
 
 // LoadConfig reads a YAML config file and applies defaults for missing fields.

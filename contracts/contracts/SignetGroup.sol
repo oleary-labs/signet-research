@@ -206,6 +206,7 @@ contract SignetGroup is Initializable, ISignetGroup {
         _activeNodeIndex[node] = _activeNodes.length;
         _activeNodes.push(node);
         nodeStatus[node] = NodeStatus.Active;
+        ISignetFactory(factory).nodeActivated(node);
     }
 
     function _removeFromActive(address node) internal {
@@ -219,6 +220,7 @@ contract SignetGroup is Initializable, ISignetGroup {
         _activeNodes.pop();
         delete _activeNodeIndex[node];
         delete nodeStatus[node];
+        ISignetFactory(factory).nodeDeactivated(node);
     }
 
     function _addToPending(address node) internal {

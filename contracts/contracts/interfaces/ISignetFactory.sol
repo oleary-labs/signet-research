@@ -22,6 +22,8 @@ interface ISignetFactory {
     event NodeRegistered(address indexed node, bytes pubkey, bool isOpen);
     event NodeOpenStatusChanged(address indexed node, bool isOpen);
     event GroupCreated(address indexed group, address indexed creator, uint256 threshold);
+    event NodeActivatedInGroup(address indexed node, address indexed group);
+    event NodeDeactivatedInGroup(address indexed node, address indexed group);
 
     // -------------------------------------------------------------------------
     // Node registry
@@ -69,4 +71,20 @@ interface ISignetFactory {
 
     /// @notice Minimum removal delay enforced on group creation.
     function MIN_REMOVAL_DELAY() external view returns (uint256);
+
+    // -------------------------------------------------------------------------
+    // Group membership callbacks (called by groups, not directly by users)
+    // -------------------------------------------------------------------------
+
+    /// @notice Called by a group when a node becomes active. Only callable by known groups.
+    function nodeActivated(address node) external;
+
+    /// @notice Called by a group when a node leaves the active set. Only callable by known groups.
+    function nodeDeactivated(address node) external;
+
+    /// @notice Return all group addresses where node is currently active.
+    function getNodeGroups(address node) external view returns (address[] memory);
+
+    /// @notice Return the stored public key for a registered node.
+    function getNodePubkey(address node) external view returns (bytes memory);
 }

@@ -368,4 +368,59 @@ contract SignetGroupTest is PubkeyHelpersGroup {
         ISignetGroup g = _threeNodeGroup();
         assertEq(g.quorum(), 2);  // threshold=1 → quorum=2
     }
+
+    // -------------------------------------------------------------------------
+    // Factory callbacks: nodeActivated / nodeDeactivated
+    // -------------------------------------------------------------------------
+
+    function testNodeJoined_FiresFactoryCallback() public {
+        ISignetGroup g = _threeNodeGroup();
+
+        // All three open nodes are active → factory should track them in their nodeGroups
+        address[] memory groups1 = factory.getNodeGroups(node1);
+        assertEq(groups1.length, 1);
+        assertEq(groups1[0], address(g));
+
+        address[] memory groups2 = factory.getNodeGroups(node2);
+        assertEq(groups2.length, 1);
+        assertEq(groups2[0], address(g));
+
+        address[] memory groups3 = factory.getNodeGroups(node3);
+        assertEq(groups3.length, 1);
+        assertEq(groups3[0], address(g));
+    }
+
+    function testNodeRemoved_FiresFactoryCallback() public {
+        ISignetGroup g = _threeNodeGroup();
+
+        vm.prank(manager);
+        g.queueRemoval(node1);
+        vm.warp(block.timestamp + 1 days);
+        g.executeRemoval(node1);
+
+        // node1 should no longer be tracked in factory
+        assertEq(factory.getNodeGroups(node1).length, 0);
+        // node2 and node3 still tracked
+        assertEq(factory.getNodeGroups(node2).length, 1);
+        assertEq(factory.getNodeGroups(node3).length, 1);
+    }
+
+    function testAcceptInvite_FiresFactoryCallback() public {
+        vm.prank(node2); factory.updateOpenStatus(false);
+
+        address[] memory addrs = new address[](3);
+        addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
+        ISignetGroup g = _createGroup(addrs);
+
+        // node2 is pending → not yet in factory nodeGroups
+        assertEq(factory.getNodeGroups(node2).length, 0);
+
+        vm.prank(node2);
+        g.acceptInvite();
+
+        // now active → factory should track it
+        address[] memory groups2 = factory.getNodeGroups(node2);
+        assertEq(groups2.length, 1);
+        assertEq(groups2[0], address(g));
+    }
 }

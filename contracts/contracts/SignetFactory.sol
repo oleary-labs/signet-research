@@ -31,11 +31,16 @@ contract SignetFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable, IS
     address[] public groups;
     mapping(address => bool) public isGroup;
 
+    // Reverse mapping: node address → list of groups where the node is active
+    mapping(address => address[]) internal _nodeGroups;
+    // 1-based index for O(1) swap-and-pop: _nodeGroupIndex[node][group] = position in _nodeGroups[node]
+    mapping(address => mapping(address => uint256)) internal _nodeGroupIndex;
+
     // -------------------------------------------------------------------------
     // Upgrade-safe storage gap
     // -------------------------------------------------------------------------
 
-    uint256[50] private __gap;
+    uint256[48] private __gap;
 
     // -------------------------------------------------------------------------
     // Initializer
@@ -99,14 +104,14 @@ contract SignetFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable, IS
         require(removalDelay >= MIN_REMOVAL_DELAY, "removal delay too short");
         require(nodeAddrs.length > threshold, "threshold too high for node count");
 
-        bytes memory initData = abi.encodeCall(
-            ISignetGroup.initialize,
-            (msg.sender, nodeAddrs, threshold, removalDelay, address(this))
-        );
-        group = address(new BeaconProxy(groupBeacon, initData));
-
+        // Two-step deploy: set isGroup BEFORE calling initialize so that
+        // nodeActivated callbacks (triggered inside _addToActive during initialize)
+        // pass the require(isGroup[msg.sender]) check.
+        group = address(new BeaconProxy(groupBeacon, ""));
         groups.push(group);
         isGroup[group] = true;
+
+        ISignetGroup(group).initialize(msg.sender, nodeAddrs, threshold, removalDelay, address(this));
 
         emit GroupCreated(group, msg.sender, threshold);
     }
@@ -119,6 +124,49 @@ contract SignetFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable, IS
     /// @inheritdoc ISignetFactory
     function getGroups() external view returns (address[] memory) {
         return groups;
+    }
+
+    // -------------------------------------------------------------------------
+    // Group membership callbacks
+    // -------------------------------------------------------------------------
+
+    /// @inheritdoc ISignetFactory
+    function nodeActivated(address node) external {
+        require(isGroup[msg.sender], "not a group");
+        address group = msg.sender;
+        if (_nodeGroupIndex[node][group] == 0) {
+            _nodeGroups[node].push(group);
+            _nodeGroupIndex[node][group] = _nodeGroups[node].length; // 1-based
+            emit NodeActivatedInGroup(node, group);
+        }
+    }
+
+    /// @inheritdoc ISignetFactory
+    function nodeDeactivated(address node) external {
+        require(isGroup[msg.sender], "not a group");
+        address group = msg.sender;
+        uint256 idx = _nodeGroupIndex[node][group];
+        if (idx == 0) return; // not tracked
+        uint256 arrIdx = idx - 1;
+        uint256 last = _nodeGroups[node].length - 1;
+        if (arrIdx != last) {
+            address tail = _nodeGroups[node][last];
+            _nodeGroups[node][arrIdx] = tail;
+            _nodeGroupIndex[node][tail] = idx; // keep 1-based
+        }
+        _nodeGroups[node].pop();
+        delete _nodeGroupIndex[node][group];
+        emit NodeDeactivatedInGroup(node, group);
+    }
+
+    /// @inheritdoc ISignetFactory
+    function getNodeGroups(address node) external view returns (address[] memory) {
+        return _nodeGroups[node];
+    }
+
+    /// @inheritdoc ISignetFactory
+    function getNodePubkey(address node) external view returns (bytes memory) {
+        return nodes[node].pubkey;
     }
 
     // -------------------------------------------------------------------------

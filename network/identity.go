@@ -91,6 +91,20 @@ func EthereumAddressFromPoint(pt curve.Point) ([20]byte, error) {
 	return addr, nil
 }
 
+// PeerIDFromUncompressedPubkey derives a libp2p peer.ID from a 65-byte uncompressed
+// secp256k1 public key (0x04 prefix). This is the inverse of how devnet-init prints pubkeys.
+func PeerIDFromUncompressedPubkey(uncompressed []byte) (peer.ID, error) {
+	pk, err := secp.ParsePubKey(uncompressed)
+	if err != nil {
+		return "", fmt.Errorf("parse uncompressed pubkey: %w", err)
+	}
+	libp2pKey, err := crypto.UnmarshalSecp256k1PublicKey(pk.SerializeCompressed())
+	if err != nil {
+		return "", fmt.Errorf("unmarshal secp256k1 pubkey: %w", err)
+	}
+	return peer.IDFromPublicKey(libp2pKey)
+}
+
 // decompressSecp256k1 converts a 33-byte compressed public key to 65-byte uncompressed form.
 func decompressSecp256k1(compressed []byte) ([]byte, error) {
 	pk, err := secp.ParsePubKey(compressed)

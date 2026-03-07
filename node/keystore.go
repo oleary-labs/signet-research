@@ -12,7 +12,12 @@ import (
 
 var shardsBucket = []byte("keyshards")
 
-// KeyShardStore persists lss.Config values keyed by session ID in a bbolt database.
+// KeyShardStore persists lss.Config values in a bbolt database, keyed by
+// (groupID, keyID). The on-disk layout uses nested buckets:
+//
+//	"keyshards"            — root bucket
+//	  └─ "<groupID>"       — one sub-bucket per group
+//	       └─ "<keyID>"    — JSON-encoded lss.Config
 type KeyShardStore struct {
 	db *bolt.DB
 }
@@ -29,27 +34,37 @@ func openKeyShardStore(dataDir string) (*KeyShardStore, error) {
 		return err
 	}); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("create bucket: %w", err)
+		return nil, fmt.Errorf("create root bucket: %w", err)
 	}
 	return &KeyShardStore{db: db}, nil
 }
 
-// Put stores cfg under sessionID, overwriting any existing entry.
-func (s *KeyShardStore) Put(sessionID string, cfg *lss.Config) error {
+// Put stores cfg under (groupID, keyID), overwriting any existing entry.
+func (s *KeyShardStore) Put(groupID, keyID string, cfg *lss.Config) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(shardsBucket).Put([]byte(sessionID), data)
+		root := tx.Bucket(shardsBucket)
+		grp, err := root.CreateBucketIfNotExists([]byte(groupID))
+		if err != nil {
+			return fmt.Errorf("create group bucket: %w", err)
+		}
+		return grp.Put([]byte(keyID), data)
 	})
 }
 
-// Get returns the config for sessionID, or (nil, nil) if not found.
-func (s *KeyShardStore) Get(sessionID string) (*lss.Config, error) {
+// Get returns the config for (groupID, keyID), or (nil, nil) if not found.
+func (s *KeyShardStore) Get(groupID, keyID string) (*lss.Config, error) {
 	var data []byte
 	if err := s.db.View(func(tx *bolt.Tx) error {
-		v := tx.Bucket(shardsBucket).Get([]byte(sessionID))
+		root := tx.Bucket(shardsBucket)
+		grp := root.Bucket([]byte(groupID))
+		if grp == nil {
+			return nil
+		}
+		v := grp.Get([]byte(keyID))
 		if v != nil {
 			data = make([]byte, len(v))
 			copy(data, v)
@@ -68,16 +83,36 @@ func (s *KeyShardStore) Get(sessionID string) (*lss.Config, error) {
 	return cfg, nil
 }
 
-// List returns all session IDs stored in the database.
-func (s *KeyShardStore) List() ([]string, error) {
+// List returns all key IDs stored under groupID.
+func (s *KeyShardStore) List(groupID string) ([]string, error) {
 	var ids []string
 	err := s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(shardsBucket).ForEach(func(k, _ []byte) error {
+		root := tx.Bucket(shardsBucket)
+		grp := root.Bucket([]byte(groupID))
+		if grp == nil {
+			return nil
+		}
+		return grp.ForEach(func(k, _ []byte) error {
 			ids = append(ids, string(k))
 			return nil
 		})
 	})
 	return ids, err
+}
+
+// ListGroups returns all group IDs that have at least one key stored.
+func (s *KeyShardStore) ListGroups() ([]string, error) {
+	var groups []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(shardsBucket).ForEach(func(k, v []byte) error {
+			if v == nil {
+				// v == nil means k is a sub-bucket name, not a value
+				groups = append(groups, string(k))
+			}
+			return nil
+		})
+	})
+	return groups, err
 }
 
 // Close closes the underlying database.
