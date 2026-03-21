@@ -1,7 +1,6 @@
 package lss
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"math/big"
 
@@ -69,6 +68,23 @@ func (s *Scalar) Inverse() *Scalar {
 
 // IsZero returns true if the scalar is zero.
 func (s *Scalar) IsZero() bool { return s.s.IsZero() }
+
+// IsOverHalfOrder returns true if the scalar is greater than n/2 (secp256k1 curve order / 2).
+// Used for EIP-2 low-s normalization.
+func (s *Scalar) IsOverHalfOrder() bool {
+	neg := s.Negate()
+	sBytes := s.Bytes()
+	negBytes := neg.Bytes()
+	for i := 0; i < 32; i++ {
+		if sBytes[i] < negBytes[i] {
+			return false
+		}
+		if sBytes[i] > negBytes[i] {
+			return true
+		}
+	}
+	return false // equal means s == n/2, treated as not over
+}
 
 // Bytes returns the big-endian 32-byte encoding.
 func (s *Scalar) Bytes() [32]byte { return s.s.Bytes() }
@@ -182,10 +198,3 @@ func PointFromSlice(b []byte) (*Point, error) {
 	return pt, nil
 }
 
-// ScalarFromHash reduces a hash (up to 32 bytes) to a scalar mod N.
-func ScalarFromHash(hash []byte) *Scalar {
-	h := sha256.Sum256(hash)
-	sc := &Scalar{}
-	sc.s.SetByteSlice(h[:])
-	return sc
-}

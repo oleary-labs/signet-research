@@ -3,6 +3,8 @@ package lss
 import (
 	"context"
 	"testing"
+
+	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 )
 
 // inMemNetwork is a simple in-process Network for testing.
@@ -317,12 +319,309 @@ func TestKeygenAndSign(t *testing.T) {
 	if sig == nil {
 		t.Fatal("nil signature")
 	}
+	t.Logf("Schnorr signature: R=%x S=%x", sig.R, sig.S)
+}
 
-	ethSig, err := sig.SigEthereum()
+// TestKeygenSignReshareSign runs keygen, signs, reshares to a new committee, and signs again.
+func TestKeygenSignReshareSign(t *testing.T) {
+	parties := []PartyID{"alice", "bob", "carol"}
+	threshold := 2
+
+	// --- Keygen ---
+	nets := map[PartyID]*inMemNetwork{}
+	for _, p := range parties {
+		nets[p] = newInMemNetwork(1000)
+	}
+
+	type kresult struct {
+		id  PartyID
+		cfg *Config
+		err error
+	}
+	kresults := make(chan kresult, len(parties))
+
+	for _, p := range parties {
+		p := p
+		net := &routingNetwork{self: p, nets: nets, parties: parties}
+		go func() {
+			round := Keygen(p, parties, threshold)
+			res, err := Run(context.Background(), round, net)
+			if err != nil {
+				kresults <- kresult{id: p, err: err}
+				return
+			}
+			cfg := res.(*Config)
+			kresults <- kresult{id: p, cfg: cfg}
+		}()
+	}
+
+	configs := map[PartyID]*Config{}
+	for i := 0; i < len(parties); i++ {
+		r := <-kresults
+		if r.err != nil {
+			t.Fatalf("keygen %s: %v", r.id, r.err)
+		}
+		configs[r.id] = r.cfg
+	}
+
+	oldPub, err := configs["alice"].PublicKey()
+	if err != nil {
+		t.Fatalf("old public key: %v", err)
+	}
+	t.Logf("Old public key: %x", oldPub.Bytes())
+
+	// --- Sign with old committee (alice + bob) ---
+	signers := []PartyID{"alice", "bob"}
+	msgHash := make([]byte, 32)
+	for i := range msgHash {
+		msgHash[i] = byte(i + 1)
+	}
+
+	signNets := map[PartyID]*inMemNetwork{}
+	for _, p := range signers {
+		signNets[p] = newInMemNetwork(1000)
+	}
+
+	type sresult struct {
+		id  PartyID
+		sig *Signature
+		err error
+	}
+	sresults := make(chan sresult, len(signers))
+	for _, p := range signers {
+		p := p
+		net := &routingNetwork{self: p, nets: signNets, parties: signers}
+		go func() {
+			round := Sign(configs[p], signers, msgHash)
+			res, err := Run(context.Background(), round, net)
+			if err != nil {
+				sresults <- sresult{id: p, err: err}
+				return
+			}
+			sig := res.(*Signature)
+			sresults <- sresult{id: p, sig: sig}
+		}()
+	}
+	for i := 0; i < len(signers); i++ {
+		r := <-sresults
+		if r.err != nil {
+			t.Fatalf("sign (pre-reshare) %s: %v", r.id, r.err)
+		}
+	}
+	t.Log("Pre-reshare signing succeeded")
+
+	// --- Reshare: {alice, bob, carol} -> {alice, bob, dave} with threshold 2 ---
+	newParties := []PartyID{"alice", "bob", "dave"}
+	newThreshold := 2
+	allParties := []PartyID{"alice", "bob", "carol", "dave"}
+
+	reshareNets := map[PartyID]*inMemNetwork{}
+	for _, p := range allParties {
+		reshareNets[p] = newInMemNetwork(1000)
+	}
+
+	type rresult struct {
+		id  PartyID
+		cfg *Config
+		err error
+	}
+	rresults := make(chan rresult, len(allParties))
+
+	for _, p := range allParties {
+		p := p
+		net := &routingNetwork{self: p, nets: reshareNets, parties: allParties}
+		go func() {
+			var cfg *Config
+			if c, ok := configs[p]; ok {
+				cfg = c // old party
+			}
+			round := Reshare(cfg, p, parties, newParties, newThreshold)
+			res, err := Run(context.Background(), round, net)
+			if err != nil {
+				rresults <- rresult{id: p, err: err}
+				return
+			}
+			if res == nil {
+				rresults <- rresult{id: p, cfg: nil}
+			} else {
+				rresults <- rresult{id: p, cfg: res.(*Config)}
+			}
+		}()
+	}
+
+	newConfigs := map[PartyID]*Config{}
+	for i := 0; i < len(allParties); i++ {
+		r := <-rresults
+		if r.err != nil {
+			t.Fatalf("reshare %s: %v", r.id, r.err)
+		}
+		if r.cfg != nil {
+			newConfigs[r.id] = r.cfg
+		}
+	}
+
+	// carol should not have a new config (removed from group).
+	if _, ok := newConfigs["carol"]; ok {
+		t.Error("carol should not have a new config after reshare")
+	}
+	// dave should have a new config.
+	if _, ok := newConfigs["dave"]; !ok {
+		t.Fatal("dave should have a new config after reshare")
+	}
+
+	// Verify public key is preserved.
+	newPub, err := newConfigs["alice"].PublicKey()
+	if err != nil {
+		t.Fatalf("new public key: %v", err)
+	}
+	if !oldPub.Equal(newPub) {
+		t.Fatalf("public key changed after reshare: old=%x new=%x", oldPub.Bytes(), newPub.Bytes())
+	}
+	t.Logf("New public key: %x (matches old)", newPub.Bytes())
+
+	// --- Sign with new committee (alice + dave) ---
+	newSigners := []PartyID{"alice", "dave"}
+	newSignNets := map[PartyID]*inMemNetwork{}
+	for _, p := range newSigners {
+		newSignNets[p] = newInMemNetwork(1000)
+	}
+
+	sresults2 := make(chan sresult, len(newSigners))
+	for _, p := range newSigners {
+		p := p
+		net := &routingNetwork{self: p, nets: newSignNets, parties: newSigners}
+		go func() {
+			round := Sign(newConfigs[p], newSigners, msgHash)
+			res, err := Run(context.Background(), round, net)
+			if err != nil {
+				sresults2 <- sresult{id: p, err: err}
+				return
+			}
+			sig := res.(*Signature)
+			sresults2 <- sresult{id: p, sig: sig}
+		}()
+	}
+	for i := 0; i < len(newSigners); i++ {
+		r := <-sresults2
+		if r.err != nil {
+			t.Fatalf("sign (post-reshare) %s: %v", r.id, r.err)
+		}
+	}
+	t.Log("Post-reshare signing with new committee succeeded")
+}
+
+// TestECDSAEcrecover verifies that the threshold ECDSA signature is compatible with
+// Ethereum's ecrecover by recovering the public key from the signature.
+func TestECDSAEcrecover(t *testing.T) {
+	parties := []PartyID{"alice", "bob", "carol"}
+	threshold := 2
+
+	// Keygen.
+	nets := map[PartyID]*inMemNetwork{}
+	for _, p := range parties {
+		nets[p] = newInMemNetwork(1000)
+	}
+	type kresult struct {
+		id  PartyID
+		cfg *Config
+		err error
+	}
+	kresults := make(chan kresult, len(parties))
+	for _, p := range parties {
+		p := p
+		net := &routingNetwork{self: p, nets: nets, parties: parties}
+		go func() {
+			round := Keygen(p, parties, threshold)
+			res, err := Run(context.Background(), round, net)
+			if err != nil {
+				kresults <- kresult{id: p, err: err}
+				return
+			}
+			kresults <- kresult{id: p, cfg: res.(*Config)}
+		}()
+	}
+	configs := map[PartyID]*Config{}
+	for i := 0; i < len(parties); i++ {
+		r := <-kresults
+		if r.err != nil {
+			t.Fatalf("keygen %s: %v", r.id, r.err)
+		}
+		configs[r.id] = r.cfg
+	}
+
+	// Sign with alice and bob using ECDSA.
+	signers := []PartyID{"alice", "bob"}
+	msgHash := make([]byte, 32)
+	for i := range msgHash {
+		msgHash[i] = byte(i + 1)
+	}
+	signNets := map[PartyID]*inMemNetwork{}
+	for _, p := range signers {
+		signNets[p] = newInMemNetwork(1000)
+	}
+	type sresult struct {
+		id  PartyID
+		sig *Signature
+		err error
+	}
+	sresults := make(chan sresult, len(signers))
+	for _, p := range signers {
+		p := p
+		net := &routingNetwork{self: p, nets: signNets, parties: signers}
+		go func() {
+			round := SignECDSA(configs[p], signers, msgHash)
+			res, err := Run(context.Background(), round, net)
+			if err != nil {
+				sresults <- sresult{id: p, err: err}
+				return
+			}
+			sresults <- sresult{id: p, sig: res.(*Signature)}
+		}()
+	}
+	var sig *Signature
+	for i := 0; i < len(signers); i++ {
+		r := <-sresults
+		if r.err != nil {
+			t.Fatalf("sign %s: %v", r.id, r.err)
+		}
+		sig = r.sig
+	}
+
+	// Get Ethereum ECDSA signature.
+	ethSig, err := sig.SigEthereumECDSA()
 	if err != nil {
 		t.Fatalf("SigEthereum: %v", err)
 	}
-	t.Logf("Ethereum signature (%d bytes): %x", len(ethSig), ethSig)
+
+	// Recover public key using go-ethereum's crypto.Ecrecover.
+	recoveredPub, err := ethcrypto.Ecrecover(msgHash, ethSig)
+	if err != nil {
+		t.Fatalf("Ecrecover: %v", err)
+	}
+
+	// Get expected public key (uncompressed).
+	pubKey, err := configs["alice"].PublicKey()
+	if err != nil {
+		t.Fatalf("PublicKey: %v", err)
+	}
+	pubBytes := pubKey.Bytes()
+
+	// Parse compressed pubkey to uncompressed for comparison.
+	expectedPub, err := ethcrypto.DecompressPubkey(pubBytes[:])
+	if err != nil {
+		t.Fatalf("DecompressPubkey: %v", err)
+	}
+	expectedUncompressed := ethcrypto.FromECDSAPub(expectedPub)
+
+	if len(recoveredPub) != len(expectedUncompressed) {
+		t.Fatalf("length mismatch: recovered=%d expected=%d", len(recoveredPub), len(expectedUncompressed))
+	}
+	for i := range recoveredPub {
+		if recoveredPub[i] != expectedUncompressed[i] {
+			t.Fatalf("ecrecover pubkey mismatch at byte %d:\n  recovered: %x\n  expected:  %x", i, recoveredPub, expectedUncompressed)
+		}
+	}
+	t.Logf("ecrecover recovered correct public key: %x", recoveredPub[:8])
 }
 
 // TestConfigJSON verifies Config marshal/unmarshal roundtrip.

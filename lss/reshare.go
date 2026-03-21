@@ -43,20 +43,17 @@ type reshareRound1 struct {
 }
 
 // Reshare returns the starting Round for a reshare protocol.
-// cfg is non-nil for old parties; newParties and newThreshold define the new committee.
-func Reshare(cfg *Config, selfID PartyID, newParties []PartyID, newThreshold int) Round {
-	var oldParties PartyIDSlice
-	inOld := false
-	if cfg != nil {
-		oldParties = cfg.PartyIDs()
-		inOld = oldParties.Contains(selfID)
-	}
+// cfg is non-nil for old parties (contains their share); oldParties lists the current committee;
+// newParties and newThreshold define the new committee.
+func Reshare(cfg *Config, selfID PartyID, oldParties []PartyID, newParties []PartyID, newThreshold int) Round {
+	oldPartySlice := NewPartyIDSlice(oldParties)
+	inOld := oldPartySlice.Contains(selfID)
 	newPartySlice := NewPartyIDSlice(newParties)
 	inNew := newPartySlice.Contains(selfID)
 
 	// All parties = union of old and new.
 	allMap := make(map[PartyID]struct{})
-	for _, p := range oldParties {
+	for _, p := range oldPartySlice {
 		allMap[p] = struct{}{}
 	}
 	for _, p := range newPartySlice {
@@ -69,7 +66,7 @@ func Reshare(cfg *Config, selfID PartyID, newParties []PartyID, newThreshold int
 
 	return &reshareRound1{
 		self:         selfID,
-		oldParties:   oldParties,
+		oldParties:   oldPartySlice,
 		newParties:   newPartySlice,
 		allParties:   NewPartyIDSlice(all),
 		newThreshold: newThreshold,
@@ -104,8 +101,15 @@ func (r *reshareRound1) Finalize() ([]*Message, Round, interface{}, error) {
 		ownPayload.IsOld = r.inOld
 
 		if r.inOld {
-			// Old party: generate polynomial with our share as constant term.
-			poly, err := NewPolynomial(r.newThreshold, r.cfg.Share)
+			// Old party: Lagrange-weight our share before using it as the constant term.
+			// This ensures that when new parties sum evaluations from all old parties,
+			// the resulting sharing reconstructs the original secret a = Σ λ_i·a_i.
+			lambda, err := LagrangeCoefficient([]PartyID(r.oldParties), r.self)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("reshare round1: lagrange: %w", err)
+			}
+			weightedShare := r.cfg.Share.Mul(lambda)
+			poly, err := NewPolynomial(r.newThreshold, weightedShare)
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("reshare round1: polynomial: %w", err)
 			}
