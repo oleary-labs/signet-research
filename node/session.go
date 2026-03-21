@@ -4,13 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/luxfi/threshold/pkg/ecdsa"
-	"github.com/luxfi/threshold/pkg/math/curve"
-	"github.com/luxfi/threshold/pkg/party"
-	"github.com/luxfi/threshold/pkg/pool"
-	"github.com/luxfi/threshold/pkg/protocol"
-	"github.com/luxfi/threshold/protocols/lss"
-
+	"signet/lss"
 	"signet/network"
 )
 
@@ -21,19 +15,12 @@ func runKeygenOn(
 	host *network.Host,
 	sn *network.SessionNetwork,
 	sessionID string,
-	parties []party.ID,
+	parties []lss.PartyID,
 	threshold int,
-	pl *pool.Pool,
 ) (*lss.Config, error) {
-	startFunc := lss.Keygen(curve.Secp256k1{}, host.Self(), parties, threshold, pl)
-	handler, err := protocol.NewMultiHandler(startFunc, []byte(sessionID))
-	if err != nil {
-		return nil, fmt.Errorf("new handler: %w", err)
-	}
+	round := lss.Keygen(host.Self(), parties, threshold)
 
-	go network.HandlerLoop(handler, sn)
-
-	result, err := handler.WaitForResult()
+	result, err := lss.Run(ctx, round, sn)
 	if err != nil {
 		return nil, fmt.Errorf("protocol: %w", err)
 	}
@@ -53,24 +40,17 @@ func runSignOn(
 	sn *network.SessionNetwork,
 	signSessionID string,
 	cfg *lss.Config,
-	signers []party.ID,
+	signers []lss.PartyID,
 	messageHash []byte,
-	pl *pool.Pool,
-) (*ecdsa.Signature, error) {
-	startFunc := lss.Sign(cfg, signers, messageHash, pl)
-	handler, err := protocol.NewMultiHandler(startFunc, []byte(signSessionID))
-	if err != nil {
-		return nil, fmt.Errorf("new handler: %w", err)
-	}
+) (*lss.Signature, error) {
+	round := lss.Sign(cfg, signers, messageHash)
 
-	go network.HandlerLoop(handler, sn)
-
-	result, err := handler.WaitForResult()
+	result, err := lss.Run(ctx, round, sn)
 	if err != nil {
 		return nil, fmt.Errorf("protocol: %w", err)
 	}
 
-	sig, ok := result.(*ecdsa.Signature)
+	sig, ok := result.(*lss.Signature)
 	if !ok {
 		return nil, fmt.Errorf("unexpected result type %T", result)
 	}

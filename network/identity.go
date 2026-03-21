@@ -7,9 +7,9 @@ import (
 	secp "github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/luxfi/threshold/pkg/math/curve"
-	"github.com/luxfi/threshold/pkg/party"
 	"golang.org/x/crypto/sha3"
+
+	"signet/lss"
 )
 
 // LoadOrGenerateKey loads a private key from path, or generates and saves a new secp256k1 key.
@@ -41,13 +41,13 @@ func LoadOrGenerateKey(path string) (crypto.PrivKey, error) {
 	return priv, nil
 }
 
-// PartyIDFromPrivKey derives party.ID = party.ID(peer.IDFromPrivateKey(priv).String()).
-func PartyIDFromPrivKey(priv crypto.PrivKey) (party.ID, error) {
+// PartyIDFromPrivKey derives lss.PartyID = lss.PartyID(peer.IDFromPrivateKey(priv).String()).
+func PartyIDFromPrivKey(priv crypto.PrivKey) (lss.PartyID, error) {
 	pid, err := peer.IDFromPrivateKey(priv)
 	if err != nil {
 		return "", fmt.Errorf("peer ID from key: %w", err)
 	}
-	return party.ID(pid.String()), nil
+	return lss.PartyID(pid.String()), nil
 }
 
 // EthereumAddress derives the Ethereum address from a secp256k1 public key.
@@ -72,9 +72,9 @@ func EthereumAddress(pub crypto.PubKey) ([20]byte, error) {
 	return addr, nil
 }
 
-// EthereumAddressFromPoint derives the Ethereum address from a secp256k1 curve.Point
-// as returned by the threshold library (e.g. cfg.PublicPoint()).
-func EthereumAddressFromPoint(pt curve.Point) ([20]byte, error) {
+// EthereumAddressFromPoint derives the Ethereum address from an lss.Point
+// (e.g. as returned by cfg.PublicPoint()).
+func EthereumAddressFromPoint(pt *lss.Point) ([20]byte, error) {
 	compressed, err := pt.MarshalBinary()
 	if err != nil {
 		return [20]byte{}, fmt.Errorf("marshal point: %w", err)

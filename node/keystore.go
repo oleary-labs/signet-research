@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/luxfi/threshold/pkg/math/curve"
-	"github.com/luxfi/threshold/protocols/lss"
-	bolt "go.etcd.io/bbolt"
+	"go.etcd.io/bbolt"
+
+	"signet/lss"
 )
 
 var shardsBucket = []byte("keyshards")
@@ -19,17 +19,17 @@ var shardsBucket = []byte("keyshards")
 //	  └─ "<groupID>"       — one sub-bucket per group
 //	       └─ "<keyID>"    — JSON-encoded lss.Config
 type KeyShardStore struct {
-	db *bolt.DB
+	db *bbolt.DB
 }
 
 // openKeyShardStore opens (or creates) the keyshards.db file under dataDir.
 // dataDir must already exist.
 func openKeyShardStore(dataDir string) (*KeyShardStore, error) {
-	db, err := bolt.Open(filepath.Join(dataDir, "keyshards.db"), 0600, nil)
+	db, err := bbolt.Open(filepath.Join(dataDir, "keyshards.db"), 0600, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open bbolt: %w", err)
 	}
-	if err := db.Update(func(tx *bolt.Tx) error {
+	if err := db.Update(func(tx *bbolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists(shardsBucket)
 		return err
 	}); err != nil {
@@ -45,7 +45,7 @@ func (s *KeyShardStore) Put(groupID, keyID string, cfg *lss.Config) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	return s.db.Update(func(tx *bolt.Tx) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
 		root := tx.Bucket(shardsBucket)
 		grp, err := root.CreateBucketIfNotExists([]byte(groupID))
 		if err != nil {
@@ -58,7 +58,7 @@ func (s *KeyShardStore) Put(groupID, keyID string, cfg *lss.Config) error {
 // Get returns the config for (groupID, keyID), or (nil, nil) if not found.
 func (s *KeyShardStore) Get(groupID, keyID string) (*lss.Config, error) {
 	var data []byte
-	if err := s.db.View(func(tx *bolt.Tx) error {
+	if err := s.db.View(func(tx *bbolt.Tx) error {
 		root := tx.Bucket(shardsBucket)
 		grp := root.Bucket([]byte(groupID))
 		if grp == nil {
@@ -76,7 +76,7 @@ func (s *KeyShardStore) Get(groupID, keyID string) (*lss.Config, error) {
 	if data == nil {
 		return nil, nil
 	}
-	cfg := lss.EmptyConfig(curve.Secp256k1{})
+	cfg := new(lss.Config)
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
@@ -86,7 +86,7 @@ func (s *KeyShardStore) Get(groupID, keyID string) (*lss.Config, error) {
 // List returns all key IDs stored under groupID.
 func (s *KeyShardStore) List(groupID string) ([]string, error) {
 	var ids []string
-	err := s.db.View(func(tx *bolt.Tx) error {
+	err := s.db.View(func(tx *bbolt.Tx) error {
 		root := tx.Bucket(shardsBucket)
 		grp := root.Bucket([]byte(groupID))
 		if grp == nil {
@@ -103,7 +103,7 @@ func (s *KeyShardStore) List(groupID string) ([]string, error) {
 // ListGroups returns all group IDs that have at least one key stored.
 func (s *KeyShardStore) ListGroups() ([]string, error) {
 	var groups []string
-	err := s.db.View(func(tx *bolt.Tx) error {
+	err := s.db.View(func(tx *bbolt.Tx) error {
 		return tx.Bucket(shardsBucket).ForEach(func(k, v []byte) error {
 			if v == nil {
 				// v == nil means k is a sub-bucket name, not a value

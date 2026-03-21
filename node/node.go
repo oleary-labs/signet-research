@@ -17,10 +17,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
 
-	"github.com/luxfi/threshold/pkg/party"
-	"github.com/luxfi/threshold/pkg/pool"
-	"github.com/luxfi/threshold/protocols/lss"
-
+	"signet/lss"
 	"signet/network"
 )
 
@@ -34,7 +31,7 @@ type shardKey struct {
 // populated at startup by the chain client and kept up to date via events.
 type GroupInfo struct {
 	Threshold int
-	Members   []party.ID // libp2p peer IDs of active members, sorted
+	Members   []lss.PartyID // libp2p peer IDs of active members, sorted
 }
 
 // Node owns a libp2p host, an HTTP API server, and threshold signing state.
@@ -46,7 +43,6 @@ type Node struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	pool    *pool.Pool
 	store   *KeyShardStore
 	mu      sync.RWMutex
 	configs map[shardKey]*lss.Config // in-memory cache: (group_id, key_id) → key config
@@ -114,7 +110,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 			log.Warn("bootstrap peer unreachable", zap.String("peer", pi.ID.String()), zap.Error(err))
 			continue
 		}
-		h.RegisterPeer(party.ID(pi.ID.String()), pi.ID)
+		h.RegisterPeer(lss.PartyID(pi.ID.String()), pi.ID)
 		log.Info("connected to bootstrap peer", zap.String("peer", pi.ID.String()))
 	}
 
@@ -138,7 +134,6 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		log:     log,
 		ctx:     ctx,
 		cancel:  cancel,
-		pool:    pool.NewPool(0),
 		store:   store,
 		configs: make(map[shardKey]*lss.Config),
 		groups:   make(map[string]*GroupInfo),
@@ -200,7 +195,6 @@ func (n *Node) Stop() error {
 	if err := n.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
-	n.pool.TearDown()
 	n.host.Close()
 	if err := n.store.Close(); err != nil {
 		n.log.Warn("close key shard store", zap.Error(err))
@@ -561,7 +555,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// party.NewIDSlice sorts the slice, as required by the LSS protocol.
-	sortedParties := party.NewIDSlice(grp.Members)
+	sortedParties := lss.NewPartyIDSlice(grp.Members)
 	sessID := keygenSessionID(req.GroupID, keyID)
 
 	n.log.Info("keygen starting",
@@ -591,7 +585,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := runKeygenOn(r.Context(), n.host, sn, sessID, sortedParties, grp.Threshold, n.pool)
+	cfg, err := runKeygenOn(r.Context(), n.host, sn, sessID, sortedParties, grp.Threshold)
 	if err != nil {
 		n.log.Error("keygen failed",
 			zap.String("group_id", req.GroupID),
@@ -740,7 +734,7 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sortedSigners := party.NewIDSlice(grp.Members)
+	sortedSigners := lss.NewPartyIDSlice(grp.Members)
 	if !sortedSigners.Contains(cfg.ID) {
 		httpError(w, http.StatusBadRequest, "this node is not a member of group "+req.GroupID)
 		return
@@ -780,7 +774,7 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sig, err := runSignOn(r.Context(), n.host, sn, sessID, cfg, sortedSigners, msgHash, n.pool)
+	sig, err := runSignOn(r.Context(), n.host, sn, sessID, cfg, sortedSigners, msgHash)
 	if err != nil {
 		n.log.Error("sign failed",
 			zap.String("group_id", req.GroupID),
