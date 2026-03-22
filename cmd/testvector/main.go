@@ -2,11 +2,24 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"signet/tss"
 
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+// FrostVector is the JSON fixture written to contracts/test/testdata/frost_vector.json
+// for consumption by FROSTVerifier.t.sol via vm.readFile.
+type FrostVector struct {
+	GroupPubKey string `json:"groupPubKey"` // hex, 33 bytes, 0x-prefixed
+	MsgHash     string `json:"msgHash"`     // hex, 32 bytes, 0x-prefixed
+	Signer      string `json:"signer"`      // Ethereum address, 0x-prefixed
+	SigRx       string `json:"sigRx"`       // hex, 32 bytes, 0x-prefixed
+	SigZ        string `json:"sigZ"`        // hex, 32 bytes, 0x-prefixed
+	SigV        uint8  `json:"sigV"`        // 0 or 1
+}
 
 type inMemNet struct{ ch chan *tss.Message }
 
@@ -132,4 +145,27 @@ func main() {
 	fmt.Printf("    bytes32 constant SIG_Z = 0x%x;\n", ethSig[32:64])
 	fmt.Printf("    uint8 constant SIG_V = %d;\n", ethSig[64])
 	fmt.Printf("    // R compressed: 0x%x\n", sig.R)
+
+	// Write JSON fixture for Solidity test consumption via vm.readFile.
+	vec := FrostVector{
+		GroupPubKey: fmt.Sprintf("0x%x", groupKey),
+		MsgHash:     fmt.Sprintf("0x%x", msgHash),
+		Signer:      addr.Hex(),
+		SigRx:       fmt.Sprintf("0x%x", ethSig[:32]),
+		SigZ:        fmt.Sprintf("0x%x", ethSig[32:64]),
+		SigV:        ethSig[64],
+	}
+	jsonData, err := json.MarshalIndent(vec, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile("contracts/test/testdata/frost_vector.json", jsonData, 0644); err != nil {
+		// Try relative path from contracts/ directory.
+		if err2 := os.MkdirAll("test/testdata", 0755); err2 == nil {
+			if err3 := os.WriteFile("test/testdata/frost_vector.json", jsonData, 0644); err3 != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not write frost_vector.json: %v\n", err3)
+			}
+		}
+	}
+	fmt.Println("Wrote contracts/test/testdata/frost_vector.json")
 }

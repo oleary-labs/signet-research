@@ -178,3 +178,33 @@ contract SignetAccountFROSTTest is Test {
         });
     }
 }
+
+/// @dev Integration test: reads a fresh FROST signature produced by Go's tss package
+///      (cmd/testvector) and verifies it via FROSTVerifier. Run `go run ./cmd/testvector/`
+///      from the repo root to regenerate test/testdata/frost_vector.json before this test.
+contract FROSTIntegrationTest is Test {
+    FROSTVerifierHarness verifier;
+
+    function setUp() public {
+        verifier = new FROSTVerifierHarness();
+    }
+
+    function testGoSignatureVerifiesOnChain() public {
+        string memory json = vm.readFile("test/testdata/frost_vector.json");
+
+        bytes memory groupPubKey = vm.parseJsonBytes(json, ".groupPubKey");
+        bytes32 msgHash       = vm.parseJsonBytes32(json, ".msgHash");
+        address signer        = vm.parseJsonAddress(json, ".signer");
+        bytes32 sigRx         = vm.parseJsonBytes32(json, ".sigRx");
+        bytes32 sigZ          = vm.parseJsonBytes32(json, ".sigZ");
+        uint8   sigV          = uint8(vm.parseJsonUint(json, ".sigV"));
+
+        bytes memory sig = abi.encodePacked(sigRx, sigZ, sigV);
+        bytes memory msg_ = abi.encodePacked(msgHash);
+
+        assertTrue(
+            verifier.verify(msg_, sig, groupPubKey, signer),
+            "Go FROST signature must verify on-chain"
+        );
+    }
+}
