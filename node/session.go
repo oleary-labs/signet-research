@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"signet/lss"
+	"signet/tss"
 	"signet/network"
 )
 
@@ -15,17 +15,17 @@ func runKeygenOn(
 	host *network.Host,
 	sn *network.SessionNetwork,
 	sessionID string,
-	parties []lss.PartyID,
+	parties []tss.PartyID,
 	threshold int,
-) (*lss.Config, error) {
-	round := lss.Keygen(host.Self(), parties, threshold)
+) (*tss.Config, error) {
+	round := tss.Keygen(host.Self(), parties, threshold)
 
-	result, err := lss.Run(ctx, round, sn)
+	result, err := tss.Run(ctx, round, sn)
 	if err != nil {
 		return nil, fmt.Errorf("protocol: %w", err)
 	}
 
-	cfg, ok := result.(*lss.Config)
+	cfg, ok := result.(*tss.Config)
 	if !ok {
 		return nil, fmt.Errorf("unexpected result type %T", result)
 	}
@@ -39,18 +39,18 @@ func runSignOn(
 	host *network.Host,
 	sn *network.SessionNetwork,
 	signSessionID string,
-	cfg *lss.Config,
-	signers []lss.PartyID,
+	cfg *tss.Config,
+	signers []tss.PartyID,
 	messageHash []byte,
-) (*lss.Signature, error) {
-	round := lss.Sign(cfg, signers, messageHash)
+) (*tss.Signature, error) {
+	round := tss.Sign(cfg, signers, messageHash)
 
-	result, err := lss.Run(ctx, round, sn)
+	result, err := tss.Run(ctx, round, sn)
 	if err != nil {
 		return nil, fmt.Errorf("protocol: %w", err)
 	}
 
-	sig, ok := result.(*lss.Signature)
+	sig, ok := result.(*tss.Signature)
 	if !ok {
 		return nil, fmt.Errorf("unexpected result type %T", result)
 	}

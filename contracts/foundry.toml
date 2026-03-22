@@ -8,6 +8,8 @@ solc = "0.8.24"
 optimizer = true
 optimizer_runs = 200
 via_ir = true
+# Allow reading Go-generated test vectors for cross-language integration tests.
+fs_permissions = [{access = "read", path = "test/testdata/"}]
 
 [profile.default.fuzz]
 runs = 256

@@ -1,4 +1,4 @@
-package lss
+package tss
 
 import (
 	"context"
@@ -16,15 +16,26 @@ type Round interface {
 	Finalize() (out []*Message, next Round, result interface{}, err error)
 }
 
+// errRound is a sentinel round that returns an error immediately.
+type errRound struct{ err error }
+
+func (r *errRound) Receive(msg *Message) error                          { return r.err }
+func (r *errRound) Finalize() ([]*Message, Round, interface{}, error) {
+	return nil, nil, nil, r.err
+}
+
 // Run drives a protocol session to completion.
 // It calls Finalize() in a loop, sending outgoing messages via net,
 // delivering incoming messages to the current round via Receive().
+//
+// Messages that arrive early (e.g. round-2 shares received while still in
+// round-1) are buffered and replayed automatically on each round transition.
 func Run(ctx context.Context, start Round, net Network) (interface{}, error) {
 	current := start
 	incoming := net.Incoming()
+	var pending []*Message // messages buffered for a future round
 
 	for {
-		// Check context before trying to finalize.
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -36,19 +47,24 @@ func Run(ctx context.Context, start Round, net Network) (interface{}, error) {
 			return nil, fmt.Errorf("finalize: %w", err)
 		}
 
-		// Send outgoing messages.
 		for _, msg := range out {
 			net.Send(msg)
 		}
 
-		// Protocol complete.
 		if result != nil {
 			return result, nil
 		}
 
 		if next != nil {
-			// Advance to the next round immediately.
 			current = next
+			// Drain buffered messages into the new round.
+			var stillPending []*Message
+			for _, msg := range pending {
+				if err := current.Receive(msg); err != nil {
+					stillPending = append(stillPending, msg)
+				}
+			}
+			pending = stillPending
 			continue
 		}
 
@@ -64,9 +80,8 @@ func Run(ctx context.Context, start Round, net Network) (interface{}, error) {
 				continue
 			}
 			if err := current.Receive(msg); err != nil {
-				// Log and skip invalid messages; don't abort the session.
-				_ = err
-				continue
+				// Buffer for a future round transition.
+				pending = append(pending, msg)
 			}
 		}
 	}

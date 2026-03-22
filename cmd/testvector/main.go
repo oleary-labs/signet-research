@@ -2,27 +2,40 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"signet/lss"
+	"os"
+	"signet/tss"
 
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-type inMemNet struct{ ch chan *lss.Message }
-
-func newNet(buf int) *inMemNet { return &inMemNet{ch: make(chan *lss.Message, buf)} }
-
-func (n *inMemNet) Send(msg *lss.Message)        { n.ch <- msg }
-func (n *inMemNet) Incoming() <-chan *lss.Message { return n.ch }
-
-type routeNet struct {
-	self    lss.PartyID
-	nets    map[lss.PartyID]*inMemNet
-	parties []lss.PartyID
+// FrostVector is the JSON fixture written to contracts/test/testdata/frost_vector.json
+// for consumption by FROSTVerifier.t.sol via vm.readFile.
+type FrostVector struct {
+	GroupPubKey string `json:"groupPubKey"` // hex, 33 bytes, 0x-prefixed
+	MsgHash     string `json:"msgHash"`     // hex, 32 bytes, 0x-prefixed
+	Signer      string `json:"signer"`      // Ethereum address, 0x-prefixed
+	SigRx       string `json:"sigRx"`       // hex, 32 bytes, 0x-prefixed
+	SigZ        string `json:"sigZ"`        // hex, 32 bytes, 0x-prefixed
+	SigV        uint8  `json:"sigV"`        // 0 or 1
 }
 
-func (r *routeNet) Incoming() <-chan *lss.Message { return r.nets[r.self].ch }
-func (r *routeNet) Send(msg *lss.Message) {
+type inMemNet struct{ ch chan *tss.Message }
+
+func newNet(buf int) *inMemNet { return &inMemNet{ch: make(chan *tss.Message, buf)} }
+
+func (n *inMemNet) Send(msg *tss.Message)        { n.ch <- msg }
+func (n *inMemNet) Incoming() <-chan *tss.Message { return n.ch }
+
+type routeNet struct {
+	self    tss.PartyID
+	nets    map[tss.PartyID]*inMemNet
+	parties []tss.PartyID
+}
+
+func (r *routeNet) Incoming() <-chan *tss.Message { return r.nets[r.self].ch }
+func (r *routeNet) Send(msg *tss.Message) {
 	if msg.To == "" {
 		for _, pid := range r.parties {
 			if pid == r.self {
@@ -38,17 +51,17 @@ func (r *routeNet) Send(msg *lss.Message) {
 }
 
 func main() {
-	parties := []lss.PartyID{"alice", "bob", "carol"}
+	parties := []tss.PartyID{"alice", "bob", "carol"}
 	threshold := 2
 
-	nets := map[lss.PartyID]*inMemNet{}
+	nets := map[tss.PartyID]*inMemNet{}
 	for _, p := range parties {
 		nets[p] = newNet(1000)
 	}
 
 	type kres struct {
-		id  lss.PartyID
-		cfg *lss.Config
+		id  tss.PartyID
+		cfg *tss.Config
 		err error
 	}
 	kch := make(chan kres, 3)
@@ -56,16 +69,16 @@ func main() {
 		p := p
 		go func() {
 			net := &routeNet{self: p, nets: nets, parties: parties}
-			round := lss.Keygen(p, parties, threshold)
-			res, err := lss.Run(context.Background(), round, net)
+			round := tss.Keygen(p, parties, threshold)
+			res, err := tss.Run(context.Background(), round, net)
 			if err != nil {
 				kch <- kres{id: p, err: err}
 				return
 			}
-			kch <- kres{id: p, cfg: res.(*lss.Config)}
+			kch <- kres{id: p, cfg: res.(*tss.Config)}
 		}()
 	}
-	configs := map[lss.PartyID]*lss.Config{}
+	configs := map[tss.PartyID]*tss.Config{}
 	for i := 0; i < 3; i++ {
 		r := <-kch
 		if r.err != nil {
@@ -74,20 +87,20 @@ func main() {
 		configs[r.id] = r.cfg
 	}
 
-	signers := []lss.PartyID{"alice", "bob"}
+	signers := []tss.PartyID{"alice", "bob"}
 	msgHash := make([]byte, 32)
 	for i := range msgHash {
 		msgHash[i] = byte(i + 1)
 	}
 
-	signNets := map[lss.PartyID]*inMemNet{}
+	signNets := map[tss.PartyID]*inMemNet{}
 	for _, p := range signers {
 		signNets[p] = newNet(1000)
 	}
 
 	type sres struct {
-		id  lss.PartyID
-		sig *lss.Signature
+		id  tss.PartyID
+		sig *tss.Signature
 		err error
 	}
 	sch := make(chan sres, 2)
@@ -95,16 +108,16 @@ func main() {
 		p := p
 		go func() {
 			net := &routeNet{self: p, nets: signNets, parties: signers}
-			round := lss.Sign(configs[p], signers, msgHash)
-			res, err := lss.Run(context.Background(), round, net)
+			round := tss.Sign(configs[p], signers, msgHash)
+			res, err := tss.Run(context.Background(), round, net)
 			if err != nil {
 				sch <- sres{id: p, err: err}
 				return
 			}
-			sch <- sres{id: p, sig: res.(*lss.Signature)}
+			sch <- sres{id: p, sig: res.(*tss.Signature)}
 		}()
 	}
-	var sig *lss.Signature
+	var sig *tss.Signature
 	for i := 0; i < 2; i++ {
 		r := <-sch
 		if r.err != nil {
@@ -118,20 +131,41 @@ func main() {
 		panic(err)
 	}
 
-	pubKey, err := configs["alice"].PublicKey()
-	if err != nil {
-		panic(err)
-	}
-	pubBytes := pubKey.Bytes()
-	ecdsaPub, err := crypto.DecompressPubkey(pubBytes[:])
+	groupKey := configs["alice"].GroupKey
+	ecdsaPub, err := crypto.DecompressPubkey(groupKey)
 	if err != nil {
 		panic(err)
 	}
 	addr := crypto.PubkeyToAddress(*ecdsaPub)
 
+	fmt.Printf("    bytes constant GROUP_PUB_KEY = hex\"%x\";\n", groupKey)
 	fmt.Printf("    bytes32 constant MSG_HASH = 0x%x;\n", msgHash)
 	fmt.Printf("    address constant SIGNER = %s;\n", addr)
 	fmt.Printf("    bytes32 constant SIG_RX = 0x%x;\n", ethSig[:32])
-	fmt.Printf("    bytes32 constant SIG_S = 0x%x;\n", ethSig[32:64])
+	fmt.Printf("    bytes32 constant SIG_Z = 0x%x;\n", ethSig[32:64])
 	fmt.Printf("    uint8 constant SIG_V = %d;\n", ethSig[64])
+	fmt.Printf("    // R compressed: 0x%x\n", sig.R)
+
+	// Write JSON fixture for Solidity test consumption via vm.readFile.
+	vec := FrostVector{
+		GroupPubKey: fmt.Sprintf("0x%x", groupKey),
+		MsgHash:     fmt.Sprintf("0x%x", msgHash),
+		Signer:      addr.Hex(),
+		SigRx:       fmt.Sprintf("0x%x", ethSig[:32]),
+		SigZ:        fmt.Sprintf("0x%x", ethSig[32:64]),
+		SigV:        ethSig[64],
+	}
+	jsonData, err := json.MarshalIndent(vec, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile("contracts/test/testdata/frost_vector.json", jsonData, 0644); err != nil {
+		// Try relative path from contracts/ directory.
+		if err2 := os.MkdirAll("test/testdata", 0755); err2 == nil {
+			if err3 := os.WriteFile("test/testdata/frost_vector.json", jsonData, 0644); err3 != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not write frost_vector.json: %v\n", err3)
+			}
+		}
+	}
+	fmt.Println("Wrote contracts/test/testdata/frost_vector.json")
 }

@@ -17,7 +17,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
 
-	"signet/lss"
+	"signet/tss"
 	"signet/network"
 )
 
@@ -31,7 +31,7 @@ type shardKey struct {
 // populated at startup by the chain client and kept up to date via events.
 type GroupInfo struct {
 	Threshold int
-	Members   []lss.PartyID // libp2p peer IDs of active members, sorted
+	Members   []tss.PartyID // libp2p peer IDs of active members, sorted
 }
 
 // Node owns a libp2p host, an HTTP API server, and threshold signing state.
@@ -45,7 +45,7 @@ type Node struct {
 
 	store   *KeyShardStore
 	mu      sync.RWMutex
-	configs map[shardKey]*lss.Config // in-memory cache: (group_id, key_id) → key config
+	configs map[shardKey]*tss.Config // in-memory cache: (group_id, key_id) → key config
 
 	groupsMu sync.RWMutex
 	groups   map[string]*GroupInfo // group contract address → resolved membership
@@ -110,7 +110,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 			log.Warn("bootstrap peer unreachable", zap.String("peer", pi.ID.String()), zap.Error(err))
 			continue
 		}
-		h.RegisterPeer(lss.PartyID(pi.ID.String()), pi.ID)
+		h.RegisterPeer(tss.PartyID(pi.ID.String()), pi.ID)
 		log.Info("connected to bootstrap peer", zap.String("peer", pi.ID.String()))
 	}
 
@@ -135,7 +135,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		ctx:     ctx,
 		cancel:  cancel,
 		store:   store,
-		configs: make(map[shardKey]*lss.Config),
+		configs: make(map[shardKey]*tss.Config),
 		groups:   make(map[string]*GroupInfo),
 		auth:     newGroupAuth(ctx, cfg.TestMode, circuitVK, log),
 		sessions: newSessionStore(),
@@ -227,7 +227,7 @@ func (n *Node) Info() NodeInfo {
 
 // cachedConfig returns a config from the in-memory cache, or loads it from the
 // store and caches it. Returns (nil, nil) when the (groupID, keyID) is not found.
-func (n *Node) cachedConfig(groupID, keyID string) (*lss.Config, error) {
+func (n *Node) cachedConfig(groupID, keyID string) (*tss.Config, error) {
 	k := shardKey{groupID, keyID}
 
 	n.mu.RLock()
@@ -312,12 +312,10 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			ethAddr := ""
-			if pub, err := cfg.PublicPoint(); err == nil {
-				if addr, err := network.EthereumAddressFromPoint(pub); err == nil {
-					ethAddr = "0x" + hex.EncodeToString(addr[:])
-				}
+			if addr, err := network.EthereumAddressFromGroupKey(cfg.GroupKey); err == nil {
+				ethAddr = "0x" + hex.EncodeToString(addr[:])
 			}
-			partyIDs := cfg.PartyIDs()
+			partyIDs := cfg.Parties
 			parties := make([]string, len(partyIDs))
 			for i, p := range partyIDs {
 				parties[i] = string(p)
@@ -554,8 +552,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// party.NewIDSlice sorts the slice, as required by the LSS protocol.
-	sortedParties := lss.NewPartyIDSlice(grp.Members)
+	sortedParties := tss.NewPartyIDSlice(grp.Members)
 	sessID := keygenSessionID(req.GroupID, keyID)
 
 	n.log.Info("keygen starting",
@@ -605,17 +602,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 	n.configs[shardKey{req.GroupID, keyID}] = cfg
 	n.mu.Unlock()
 
-	pub, err := cfg.PublicPoint()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "public point: "+err.Error())
-		return
-	}
-	pubBytes, err := pub.MarshalBinary()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "marshal public key: "+err.Error())
-		return
-	}
-	ethAddr, err := network.EthereumAddressFromPoint(pub)
+	ethAddr, err := network.EthereumAddressFromGroupKey(cfg.GroupKey)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "eth addr: "+err.Error())
 		return
@@ -631,7 +618,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"group_id":         req.GroupID,
 		"key_id":           keyID,
-		"public_key":       "0x" + hex.EncodeToString(pubBytes),
+		"public_key":       "0x" + hex.EncodeToString(cfg.GroupKey),
 		"ethereum_address": "0x" + hex.EncodeToString(ethAddr[:]),
 	})
 }
@@ -734,7 +721,7 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sortedSigners := lss.NewPartyIDSlice(grp.Members)
+	sortedSigners := tss.NewPartyIDSlice(grp.Members)
 	if !sortedSigners.Contains(cfg.ID) {
 		httpError(w, http.StatusBadRequest, "this node is not a member of group "+req.GroupID)
 		return
