@@ -7,17 +7,17 @@ import (
 
 	"go.etcd.io/bbolt"
 
-	"signet/lss"
+	"signet/tss"
 )
 
 var shardsBucket = []byte("keyshards")
 
-// KeyShardStore persists lss.Config values in a bbolt database, keyed by
+// KeyShardStore persists tss.Config values in a bbolt database, keyed by
 // (groupID, keyID). The on-disk layout uses nested buckets:
 //
 //	"keyshards"            — root bucket
 //	  └─ "<groupID>"       — one sub-bucket per group
-//	       └─ "<keyID>"    — JSON-encoded lss.Config
+//	       └─ "<keyID>"    — JSON-encoded tss.Config
 type KeyShardStore struct {
 	db *bbolt.DB
 }
@@ -40,7 +40,7 @@ func openKeyShardStore(dataDir string) (*KeyShardStore, error) {
 }
 
 // Put stores cfg under (groupID, keyID), overwriting any existing entry.
-func (s *KeyShardStore) Put(groupID, keyID string, cfg *lss.Config) error {
+func (s *KeyShardStore) Put(groupID, keyID string, cfg *tss.Config) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
@@ -56,7 +56,7 @@ func (s *KeyShardStore) Put(groupID, keyID string, cfg *lss.Config) error {
 }
 
 // Get returns the config for (groupID, keyID), or (nil, nil) if not found.
-func (s *KeyShardStore) Get(groupID, keyID string) (*lss.Config, error) {
+func (s *KeyShardStore) Get(groupID, keyID string) (*tss.Config, error) {
 	var data []byte
 	if err := s.db.View(func(tx *bbolt.Tx) error {
 		root := tx.Bucket(shardsBucket)
@@ -76,7 +76,7 @@ func (s *KeyShardStore) Get(groupID, keyID string) (*lss.Config, error) {
 	if data == nil {
 		return nil, nil
 	}
-	cfg := new(lss.Config)
+	cfg := new(tss.Config)
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}

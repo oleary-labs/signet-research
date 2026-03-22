@@ -1,4 +1,4 @@
-package lss
+package tss
 
 import (
 	"crypto/rand"
@@ -12,8 +12,7 @@ type Polynomial struct {
 }
 
 // NewPolynomial creates a random polynomial of degree threshold-1 with the
-// given secret as the constant term. Random coefficients are generated for
-// degrees 1 through threshold-1.
+// given secret as the constant term.
 func NewPolynomial(threshold int, secret *Scalar) (*Polynomial, error) {
 	if threshold < 1 {
 		return nil, fmt.Errorf("threshold must be >= 1")
@@ -32,7 +31,6 @@ func NewPolynomial(threshold int, secret *Scalar) (*Polynomial, error) {
 
 // Evaluate computes f(x) using Horner's method.
 func (p *Polynomial) Evaluate(x *Scalar) *Scalar {
-	// Horner: f(x) = coeffs[0] + x*(coeffs[1] + x*(coeffs[2] + ...))
 	result := NewScalar()
 	result.s.Set(&p.coeffs[len(p.coeffs)-1].s)
 	for i := len(p.coeffs) - 2; i >= 0; i-- {
@@ -40,6 +38,11 @@ func (p *Polynomial) Evaluate(x *Scalar) *Scalar {
 		result = result.Add(p.coeffs[i])
 	}
 	return result
+}
+
+// Coefficients returns the polynomial coefficients (constant term first).
+func (p *Polynomial) Coefficients() []*Scalar {
+	return p.coeffs
 }
 
 // randomScalar generates a cryptographically random non-zero scalar mod N.

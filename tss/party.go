@@ -1,4 +1,4 @@
-package lss
+package tss
 
 import (
 	"crypto/sha256"

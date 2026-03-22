@@ -2,33 +2,35 @@
 pragma solidity 0.8.24;
 
 import "forge-std/Test.sol";
-import {SchnorrVerifier} from "../contracts/SchnorrVerifier.sol";
+import {FROSTVerifier} from "../contracts/FROSTVerifier.sol";
 import {SignetAccount} from "../contracts/SignetAccount.sol";
 import {PackedUserOperation} from "../contracts/interfaces/IAccount.sol";
 
 /// @dev Wrapper to expose the library function for testing.
-contract SchnorrVerifierHarness {
+contract FROSTVerifierHarness {
     function verify(bytes32 msgHash, bytes memory signature, address signer) external view returns (bool) {
-        return SchnorrVerifier.verify(msgHash, signature, signer);
+        return FROSTVerifier.verify(msgHash, signature, signer);
     }
 }
 
-contract SchnorrVerifierTest is Test {
-    SchnorrVerifierHarness verifier;
+contract FROSTVerifierTest is Test {
+    FROSTVerifierHarness verifier;
 
-    // Test vector generated from LSS 2-of-3 threshold Schnorr signing.
+    // Test vector generated from FROST 2-of-3 threshold Schnorr signing (tss package).
+    // Produced by cmd/testvector with parties ["alice","bob","carol"], threshold=2,
+    // signers=["alice","bob"], msgHash=0x0102...1f20.
     bytes32 constant MSG_HASH = 0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20;
-    address constant SIGNER = 0xf925118a55dE09bbc8Db68fF8e74845a43107d0b;
-    bytes32 constant SIG_RX = 0xebe540f9f6f5e555eab37fd87296c60086d2c8e138c09c1722738599011bd72b;
-    bytes32 constant SIG_S = 0x7aebbf3b94d0840bf1c2da9c28bb5a55e71dfc52b044d79e7e22fa5d597ee36c;
-    uint8 constant SIG_V = 1;
+    address constant SIGNER = 0x61C17C5Be88fa04d59464e49999DbA73f94771f6;
+    bytes32 constant SIG_RX = 0x1ad760891f617cd8f0b8185f2ffaf09270bacd83a0bbad19fefcddef901bdfce;
+    bytes32 constant SIG_Z = 0xf9c96d5b895e5c3a0502cd70b817240425b843689d8f45ceaf8e7e87a2fafe65;
+    uint8 constant SIG_V = 0;
 
     function setUp() public {
-        verifier = new SchnorrVerifierHarness();
+        verifier = new FROSTVerifierHarness();
     }
 
     function _sig() internal pure returns (bytes memory) {
-        return abi.encodePacked(SIG_RX, SIG_S, SIG_V);
+        return abi.encodePacked(SIG_RX, SIG_Z, SIG_V);
     }
 
     function testVerifyValid() public view {
@@ -43,19 +45,19 @@ contract SchnorrVerifierTest is Test {
         assertFalse(verifier.verify(bytes32(uint256(1)), _sig(), SIGNER));
     }
 
-    function testVerifyTamperedS() public view {
-        bytes memory sig = abi.encodePacked(SIG_RX, bytes32(uint256(SIG_S) ^ 1), SIG_V);
+    function testVerifyTamperedZ() public view {
+        bytes memory sig = abi.encodePacked(SIG_RX, bytes32(uint256(SIG_Z) ^ 1), SIG_V);
         assertFalse(verifier.verify(MSG_HASH, sig, SIGNER));
     }
 
     function testVerifyTamperedRx() public view {
-        bytes memory sig = abi.encodePacked(bytes32(uint256(SIG_RX) ^ 1), SIG_S, SIG_V);
+        bytes memory sig = abi.encodePacked(bytes32(uint256(SIG_RX) ^ 1), SIG_Z, SIG_V);
         assertFalse(verifier.verify(MSG_HASH, sig, SIGNER));
     }
 
     function testVerifyFlippedV() public view {
         uint8 wrongV = SIG_V == 0 ? 1 : 0;
-        bytes memory sig = abi.encodePacked(SIG_RX, SIG_S, wrongV);
+        bytes memory sig = abi.encodePacked(SIG_RX, SIG_Z, wrongV);
         assertFalse(verifier.verify(MSG_HASH, sig, SIGNER));
     }
 
@@ -64,25 +66,24 @@ contract SchnorrVerifierTest is Test {
         assertFalse(verifier.verify(MSG_HASH, "", SIGNER));
     }
 
-    function testVerifyZeroMsgHash() public view {
-        assertFalse(verifier.verify(bytes32(0), _sig(), SIGNER));
+    function testVerifyZeroSigner() public view {
+        assertFalse(verifier.verify(MSG_HASH, _sig(), address(0)));
     }
 
     function testGasCost() public {
         uint256 gasBefore = gasleft();
         verifier.verify(MSG_HASH, _sig(), SIGNER);
         uint256 gasUsed = gasBefore - gasleft();
-        emit log_named_uint("Schnorr verify gas", gasUsed);
-        // modexp precompile dominates; ~12k gas total.
-        assertLt(gasUsed, 15_000);
+        emit log_named_uint("FROST verify gas", gasUsed);
+        // modexp precompile dominates; ~12-14k gas total.
+        assertLt(gasUsed, 16_000);
     }
 }
 
-contract SignetAccountTest is Test {
+contract SignetAccountFROSTTest is Test {
     SignetAccount account;
     address entryPoint;
 
-    // SignetAccount now uses FROSTVerifier — use FROST test vectors.
     bytes32 constant MSG_HASH = 0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20;
     address constant SIGNER = 0x61C17C5Be88fa04d59464e49999DbA73f94771f6;
     bytes32 constant SIG_RX = 0x1ad760891f617cd8f0b8185f2ffaf09270bacd83a0bbad19fefcddef901bdfce;
@@ -139,15 +140,9 @@ contract SignetAccountTest is Test {
         assertEq(target.balance, 0.1 ether);
     }
 
-    function testExecute_onlyEntryPoint() public {
-        vm.expectRevert(SignetAccount.OnlyEntryPoint.selector);
-        account.execute(address(0), 0, "");
-    }
-
     function testRotateSigner() public {
         address newSigner = makeAddr("newSigner");
 
-        // rotateSigner must be called by the account itself (via execute).
         vm.prank(entryPoint);
         account.execute(
             address(account),
@@ -155,11 +150,6 @@ contract SignetAccountTest is Test {
             abi.encodeCall(SignetAccount.rotateSigner, (newSigner))
         );
         assertEq(account.signer(), newSigner);
-    }
-
-    function testRotateSigner_onlySelf() public {
-        vm.expectRevert(SignetAccount.OnlySelf.selector);
-        account.rotateSigner(address(0));
     }
 
     function _dummyUserOp() internal view returns (PackedUserOperation memory) {

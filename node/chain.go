@@ -14,7 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
 
-	"signet/lss"
+	"signet/tss"
 	"signet/network"
 )
 
@@ -138,7 +138,7 @@ func (c *ChainClient) buildGroupInfo(ctx context.Context, grpAddr common.Address
 		return nil, fmt.Errorf("threshold: %w", err)
 	}
 
-	ids := make([]lss.PartyID, 0, len(members))
+	ids := make([]tss.PartyID, 0, len(members))
 	for _, memberAddr := range members {
 		pid, err := c.resolvePartyID(ctx, memberAddr)
 		if err != nil {
@@ -177,8 +177,8 @@ func (c *ChainClient) buildGroupInfo(ctx context.Context, grpAddr common.Address
 	}, nil
 }
 
-// resolvePartyID fetches the node's pubkey from the factory and derives its lss.PartyID.
-func (c *ChainClient) resolvePartyID(ctx context.Context, nodeAddr common.Address) (lss.PartyID, error) {
+// resolvePartyID fetches the node's pubkey from the factory and derives its tss.PartyID.
+func (c *ChainClient) resolvePartyID(ctx context.Context, nodeAddr common.Address) (tss.PartyID, error) {
 	pubkey, err := c.callGetNodePubkey(ctx, nodeAddr)
 	if err != nil {
 		return "", fmt.Errorf("getNodePubkey %s: %w", nodeAddr.Hex(), err)
@@ -190,7 +190,7 @@ func (c *ChainClient) resolvePartyID(ctx context.Context, nodeAddr common.Addres
 	if err != nil {
 		return "", fmt.Errorf("peer ID from pubkey: %w", err)
 	}
-	return lss.PartyID(peerID.String()), nil
+	return tss.PartyID(peerID.String()), nil
 }
 
 // start launches the event-polling goroutine.
@@ -504,7 +504,7 @@ func (c *ChainClient) callThreshold(ctx context.Context, grpAddr common.Address)
 
 // --- Slice helpers ---
 
-func containsParty(slice []lss.PartyID, id lss.PartyID) bool {
+func containsParty(slice []tss.PartyID, id tss.PartyID) bool {
 	for _, v := range slice {
 		if v == id {
 			return true
@@ -513,7 +513,7 @@ func containsParty(slice []lss.PartyID, id lss.PartyID) bool {
 	return false
 }
 
-func removeParty(slice []lss.PartyID, id lss.PartyID) []lss.PartyID {
+func removeParty(slice []tss.PartyID, id tss.PartyID) []tss.PartyID {
 	for i, v := range slice {
 		if v == id {
 			return append(slice[:i], slice[i+1:]...)

@@ -1,10 +1,11 @@
-package lss
+package tss
 
 import (
 	"fmt"
 	"math/big"
 
 	secp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"golang.org/x/crypto/sha3"
 )
 
 // Scalar wraps secp256k1.ModNScalar for arithmetic mod the curve order N.
@@ -25,7 +26,6 @@ func ScalarFromBytes(b [32]byte) *Scalar {
 // ScalarFromBigInt sets the scalar from a big.Int, reducing mod N.
 func ScalarFromBigInt(n *big.Int) *Scalar {
 	b := n.Bytes()
-	// pad to 32 bytes
 	var buf [32]byte
 	if len(b) > 32 {
 		b = b[len(b)-32:]
@@ -68,23 +68,6 @@ func (s *Scalar) Inverse() *Scalar {
 
 // IsZero returns true if the scalar is zero.
 func (s *Scalar) IsZero() bool { return s.s.IsZero() }
-
-// IsOverHalfOrder returns true if the scalar is greater than n/2 (secp256k1 curve order / 2).
-// Used for EIP-2 low-s normalization.
-func (s *Scalar) IsOverHalfOrder() bool {
-	neg := s.Negate()
-	sBytes := s.Bytes()
-	negBytes := neg.Bytes()
-	for i := 0; i < 32; i++ {
-		if sBytes[i] < negBytes[i] {
-			return false
-		}
-		if sBytes[i] > negBytes[i] {
-			return true
-		}
-	}
-	return false // equal means s == n/2, treated as not over
-}
 
 // Bytes returns the big-endian 32-byte encoding.
 func (s *Scalar) Bytes() [32]byte { return s.s.Bytes() }
@@ -152,7 +135,6 @@ func (p *Point) Equal(q *Point) bool {
 func (p *Point) XScalar() *Scalar {
 	pt := p.p
 	pt.ToAffine()
-	// Convert FieldVal to scalar: extract bytes then load as scalar
 	xBytes := pt.X.Bytes()
 	result := &Scalar{}
 	result.s.SetByteSlice(xBytes[:])
@@ -170,7 +152,7 @@ func (p *Point) Bytes() [33]byte {
 	return out
 }
 
-// MarshalBinary returns the 33-byte compressed encoding (implements binary marshaler).
+// MarshalBinary returns the 33-byte compressed encoding.
 func (p *Point) MarshalBinary() ([]byte, error) {
 	b := p.Bytes()
 	return b[:], nil
@@ -198,3 +180,19 @@ func PointFromSlice(b []byte) (*Point, error) {
 	return pt, nil
 }
 
+// ethereumAddressFromPoint derives the Ethereum address from a secp256k1 point.
+// address = keccak256(uncompressed_pubkey[1:])[12:]
+func ethereumAddressFromPoint(pt *Point) ([20]byte, error) {
+	compressed := pt.Bytes()
+	pub, err := secp256k1.ParsePubKey(compressed[:])
+	if err != nil {
+		return [20]byte{}, fmt.Errorf("parse point: %w", err)
+	}
+	uncompressed := pub.SerializeUncompressed()
+	h := sha3.NewLegacyKeccak256()
+	h.Write(uncompressed[1:])
+	digest := h.Sum(nil)
+	var addr [20]byte
+	copy(addr[:], digest[12:])
+	return addr, nil
+}

@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"signet/lss"
 	"signet/network"
+	"signet/tss"
 )
 
 func TestLibp2pKeygen(t *testing.T) {
@@ -32,8 +32,8 @@ func TestLibp2pKeygen(t *testing.T) {
 
 	var (
 		mu      sync.Mutex
-		configs = make(map[lss.PartyID]*lss.Config)
-		errs    = make(map[lss.PartyID]error)
+		configs = make(map[tss.PartyID]*tss.Config)
+		errs    = make(map[tss.PartyID]error)
 		wg      sync.WaitGroup
 	)
 
@@ -42,13 +42,13 @@ func TestLibp2pKeygen(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, err := lss.Run(ctx, lss.Keygen(pid, parties, threshold), sessions[i])
+			result, err := tss.Run(ctx, tss.Keygen(pid, parties, threshold), sessions[i])
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
 				errs[pid] = err
 			} else {
-				configs[pid] = result.(*lss.Config)
+				configs[pid] = result.(*tss.Config)
 			}
 		}()
 	}
@@ -75,13 +75,13 @@ func TestLibp2pSign(t *testing.T) {
 
 	configs := runKeygen(t, ctx, hosts, parties, threshold)
 
-	hostByParty := make(map[lss.PartyID]*network.Host, n)
+	hostByParty := make(map[tss.PartyID]*network.Host, n)
 	for i, pid := range parties {
 		hostByParty[pid] = hosts[i]
 	}
 
 	t.Log("--- signing with all 3 parties ---")
-	signers := lss.NewPartyIDSlice(parties)
+	signers := tss.NewPartyIDSlice(parties)
 
 	var messageHash [32]byte
 	for i := range messageHash {
@@ -119,10 +119,10 @@ func TestEthereumAddress(t *testing.T) {
 
 // --- helpers ---
 
-func setupHosts(t *testing.T, ctx context.Context, n int) ([]*network.Host, []lss.PartyID) {
+func setupHosts(t *testing.T, ctx context.Context, n int) ([]*network.Host, []tss.PartyID) {
 	t.Helper()
 	hosts := make([]*network.Host, n)
-	parties := make([]lss.PartyID, n)
+	parties := make([]tss.PartyID, n)
 	for i := 0; i < n; i++ {
 		priv, _, err := crypto.GenerateKeyPair(crypto.Secp256k1, -1)
 		require.NoError(t, err)
@@ -145,7 +145,7 @@ func closeHosts(hosts []*network.Host) {
 	}
 }
 
-func openSessions(t *testing.T, ctx context.Context, hosts []*network.Host, parties []lss.PartyID, sessionID string) []*network.SessionNetwork {
+func openSessions(t *testing.T, ctx context.Context, hosts []*network.Host, parties []tss.PartyID, sessionID string) []*network.SessionNetwork {
 	t.Helper()
 	sessions := make([]*network.SessionNetwork, len(hosts))
 	for i, h := range hosts {
@@ -162,14 +162,14 @@ func closeSessions(sessions []*network.SessionNetwork) {
 	}
 }
 
-func runKeygen(t *testing.T, ctx context.Context, hosts []*network.Host, parties []lss.PartyID, threshold int) map[lss.PartyID]*lss.Config {
+func runKeygen(t *testing.T, ctx context.Context, hosts []*network.Host, parties []tss.PartyID, threshold int) map[tss.PartyID]*tss.Config {
 	t.Helper()
 	sessions := openSessions(t, ctx, hosts, parties, "test-keygen")
 	defer closeSessions(sessions)
 
 	var mu sync.Mutex
-	configs := make(map[lss.PartyID]*lss.Config)
-	errs := make(map[lss.PartyID]error)
+	configs := make(map[tss.PartyID]*tss.Config)
+	errs := make(map[tss.PartyID]error)
 	var wg sync.WaitGroup
 
 	for i, pid := range parties {
@@ -177,13 +177,13 @@ func runKeygen(t *testing.T, ctx context.Context, hosts []*network.Host, parties
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, err := lss.Run(ctx, lss.Keygen(pid, parties, threshold), sessions[i])
+			result, err := tss.Run(ctx, tss.Keygen(pid, parties, threshold), sessions[i])
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
 				errs[pid] = err
 			} else {
-				configs[pid] = result.(*lss.Config)
+				configs[pid] = result.(*tss.Config)
 			}
 		}()
 	}
@@ -197,9 +197,9 @@ func runKeygen(t *testing.T, ctx context.Context, hosts []*network.Host, parties
 	return configs
 }
 
-func runSign(t *testing.T, ctx context.Context, hostByParty map[lss.PartyID]*network.Host, signers lss.PartyIDSlice, configs map[lss.PartyID]*lss.Config, messageHash []byte) map[lss.PartyID]*lss.Signature {
+func runSign(t *testing.T, ctx context.Context, hostByParty map[tss.PartyID]*network.Host, signers tss.PartyIDSlice, configs map[tss.PartyID]*tss.Config, messageHash []byte) map[tss.PartyID]*tss.Signature {
 	t.Helper()
-	sessions := make(map[lss.PartyID]*network.SessionNetwork, len(signers))
+	sessions := make(map[tss.PartyID]*network.SessionNetwork, len(signers))
 	for _, pid := range signers {
 		sn, err := network.NewSessionNetwork(ctx, hostByParty[pid], "test-sign", signers)
 		require.NoError(t, err)
@@ -212,8 +212,8 @@ func runSign(t *testing.T, ctx context.Context, hostByParty map[lss.PartyID]*net
 	}()
 
 	var mu sync.Mutex
-	sigs := make(map[lss.PartyID]*lss.Signature)
-	errs := make(map[lss.PartyID]error)
+	sigs := make(map[tss.PartyID]*tss.Signature)
+	errs := make(map[tss.PartyID]error)
 	var wg sync.WaitGroup
 
 	for _, pid := range signers {
@@ -221,13 +221,13 @@ func runSign(t *testing.T, ctx context.Context, hostByParty map[lss.PartyID]*net
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, err := lss.Run(ctx, lss.Sign(configs[pid], signers, messageHash), sessions[pid])
+			result, err := tss.Run(ctx, tss.Sign(configs[pid], signers, messageHash), sessions[pid])
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
 				errs[pid] = err
 			} else {
-				sigs[pid] = result.(*lss.Signature)
+				sigs[pid] = result.(*tss.Signature)
 			}
 		}()
 	}

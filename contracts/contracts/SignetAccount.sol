@@ -2,17 +2,16 @@
 pragma solidity 0.8.24;
 
 import {IAccount, PackedUserOperation} from "./interfaces/IAccount.sol";
-import {SchnorrVerifier} from "./SchnorrVerifier.sol";
+import {FROSTVerifier} from "./FROSTVerifier.sol";
 
 /// @title SignetAccount
-/// @notice ERC-4337 smart account that validates operations using threshold Schnorr signatures
-/// from the LSS signing protocol. The account's signer is the group public key, represented
-/// as an Ethereum address.
+/// @notice ERC-4337 smart account that validates operations using FROST threshold Schnorr
+/// signatures. The account's signer is the group public key, represented as an Ethereum address.
 ///
 /// Usage with ERC-4337:
 /// 1. Deploy via factory with entryPoint and signer address
-/// 2. The LSS signing group produces a Schnorr signature on the userOpHash
-/// 3. The signature (65 bytes: R.x || s || v) is placed in userOp.signature
+/// 2. The FROST signing group produces a Schnorr signature on the userOpHash
+/// 3. The signature (65 bytes: R.x || z || v) is placed in userOp.signature
 /// 4. EntryPoint calls validateUserOp, which verifies via ecrecover trick
 ///
 /// @dev This is a minimal reference implementation. Production accounts should add:
@@ -74,12 +73,12 @@ contract SignetAccount is IAccount {
         signer = newSigner;
     }
 
-    /// @dev Validate the Schnorr signature in the user operation.
+    /// @dev Validate the FROST Schnorr signature in the user operation.
     function _validateSignature(
         PackedUserOperation calldata userOp,
         bytes32 userOpHash
     ) internal view returns (uint256) {
-        if (SchnorrVerifier.verify(userOpHash, userOp.signature, signer)) {
+        if (FROSTVerifier.verify(userOpHash, userOp.signature, signer)) {
             return 0;
         }
         return SIG_VALIDATION_FAILED;

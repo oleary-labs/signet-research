@@ -1,4 +1,4 @@
-package lss
+package tss
 
 import (
 	"github.com/fxamacker/cbor/v2"

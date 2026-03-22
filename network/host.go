@@ -14,7 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 
-	"signet/lss"
+	"signet/tss"
 )
 
 const (
@@ -22,18 +22,18 @@ const (
 	maxMessageSize = 10 * 1024 * 1024
 )
 
-// Host wraps a libp2p host and maintains lss.PartyID <-> peer.ID mappings.
+// Host wraps a libp2p host and maintains tss.PartyID <-> peer.ID mappings.
 type Host struct {
 	h    host.Host
-	self lss.PartyID
+	self tss.PartyID
 
 	mu      sync.RWMutex
-	parties map[lss.PartyID]peer.ID // lss.PartyID -> peer.ID
-	peers   map[peer.ID]lss.PartyID // peer.ID -> lss.PartyID
+	parties map[tss.PartyID]peer.ID // tss.PartyID -> peer.ID
+	peers   map[peer.ID]tss.PartyID // peer.ID -> tss.PartyID
 }
 
 // NewHost creates a libp2p host listening on the given multiaddr (e.g. "/ip4/127.0.0.1/tcp/0").
-// The host's identity is derived from privKey; lss.PartyID == peer.ID.String().
+// The host's identity is derived from privKey; tss.PartyID == peer.ID.String().
 func NewHost(ctx context.Context, privKey crypto.PrivKey, listenAddr string) (*Host, error) {
 	self, err := PartyIDFromPrivKey(privKey)
 	if err != nil {
@@ -51,8 +51,8 @@ func NewHost(ctx context.Context, privKey crypto.PrivKey, listenAddr string) (*H
 	host := &Host{
 		h:       h,
 		self:    self,
-		parties: make(map[lss.PartyID]peer.ID),
-		peers:   make(map[peer.ID]lss.PartyID),
+		parties: make(map[tss.PartyID]peer.ID),
+		peers:   make(map[peer.ID]tss.PartyID),
 	}
 
 	// Register self in the mapping table.
@@ -78,14 +78,14 @@ type connectionNotifee struct{ host *Host }
 
 func (n *connectionNotifee) Connected(_ libp2pnet.Network, c libp2pnet.Conn) {
 	pid := c.RemotePeer()
-	n.host.RegisterPeer(lss.PartyID(pid.String()), pid)
+	n.host.RegisterPeer(tss.PartyID(pid.String()), pid)
 }
 func (n *connectionNotifee) Disconnected(_ libp2pnet.Network, _ libp2pnet.Conn) {}
 func (n *connectionNotifee) Listen(_ libp2pnet.Network, _ ma.Multiaddr)          {}
 func (n *connectionNotifee) ListenClose(_ libp2pnet.Network, _ ma.Multiaddr)     {}
 
-// Self returns the lss.PartyID of this host.
-func (h *Host) Self() lss.PartyID { return h.self }
+// Self returns the tss.PartyID of this host.
+func (h *Host) Self() tss.PartyID { return h.self }
 
 // PeerID returns the libp2p peer.ID of this host.
 func (h *Host) PeerID() peer.ID { return h.h.ID() }
@@ -100,16 +100,16 @@ func (h *Host) Addrs() []string {
 	return out
 }
 
-// RegisterPeer adds a lss.PartyID <-> peer.ID mapping.
-func (h *Host) RegisterPeer(partyID lss.PartyID, peerID peer.ID) {
+// RegisterPeer adds a tss.PartyID <-> peer.ID mapping.
+func (h *Host) RegisterPeer(partyID tss.PartyID, peerID peer.ID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.parties[partyID] = peerID
 	h.peers[peerID] = partyID
 }
 
-// PeerForParty returns the peer.ID for a given lss.PartyID.
-func (h *Host) PeerForParty(id lss.PartyID) (peer.ID, bool) {
+// PeerForParty returns the peer.ID for a given tss.PartyID.
+func (h *Host) PeerForParty(id tss.PartyID) (peer.ID, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	pid, ok := h.parties[id]
@@ -123,7 +123,7 @@ func (h *Host) LibP2PHost() host.Host { return h.h }
 func (h *Host) Close() error { return h.h.Close() }
 
 // writeMessage writes a length-prefixed (4-byte big-endian) CBOR payload.
-func writeMessage(w io.Writer, msg *lss.Message) error {
+func writeMessage(w io.Writer, msg *tss.Message) error {
 	data, err := msg.MarshalBinary()
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
@@ -141,7 +141,7 @@ func writeMessage(w io.Writer, msg *lss.Message) error {
 }
 
 // readMessage reads a length-prefixed CBOR message.
-func readMessage(r io.Reader) (*lss.Message, error) {
+func readMessage(r io.Reader) (*tss.Message, error) {
 	var lenBuf [4]byte
 	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
 		return nil, err
@@ -154,7 +154,7 @@ func readMessage(r io.Reader) (*lss.Message, error) {
 	if _, err := io.ReadFull(r, data); err != nil {
 		return nil, err
 	}
-	msg := &lss.Message{}
+	msg := &tss.Message{}
 	if err := msg.UnmarshalBinary(data); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}

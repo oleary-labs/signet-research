@@ -17,7 +17,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
 
-	"signet/lss"
+	"signet/tss"
 	"signet/network"
 )
 
@@ -31,7 +31,7 @@ type shardKey struct {
 // populated at startup by the chain client and kept up to date via events.
 type GroupInfo struct {
 	Threshold int
-	Members   []lss.PartyID // libp2p peer IDs of active members, sorted
+	Members   []tss.PartyID // libp2p peer IDs of active members, sorted
 }
 
 // Node owns a libp2p host, an HTTP API server, and threshold signing state.
@@ -45,7 +45,7 @@ type Node struct {
 
 	store   *KeyShardStore
 	mu      sync.RWMutex
-	configs map[shardKey]*lss.Config // in-memory cache: (group_id, key_id) → key config
+	configs map[shardKey]*tss.Config // in-memory cache: (group_id, key_id) → key config
 
 	groupsMu sync.RWMutex
 	groups   map[string]*GroupInfo // group contract address → resolved membership
@@ -110,7 +110,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 			log.Warn("bootstrap peer unreachable", zap.String("peer", pi.ID.String()), zap.Error(err))
 			continue
 		}
-		h.RegisterPeer(lss.PartyID(pi.ID.String()), pi.ID)
+		h.RegisterPeer(tss.PartyID(pi.ID.String()), pi.ID)
 		log.Info("connected to bootstrap peer", zap.String("peer", pi.ID.String()))
 	}
 
@@ -135,7 +135,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		ctx:     ctx,
 		cancel:  cancel,
 		store:   store,
-		configs: make(map[shardKey]*lss.Config),
+		configs: make(map[shardKey]*tss.Config),
 		groups:   make(map[string]*GroupInfo),
 		auth:     newGroupAuth(ctx, cfg.TestMode, circuitVK, log),
 		sessions: newSessionStore(),
@@ -227,7 +227,7 @@ func (n *Node) Info() NodeInfo {
 
 // cachedConfig returns a config from the in-memory cache, or loads it from the
 // store and caches it. Returns (nil, nil) when the (groupID, keyID) is not found.
-func (n *Node) cachedConfig(groupID, keyID string) (*lss.Config, error) {
+func (n *Node) cachedConfig(groupID, keyID string) (*tss.Config, error) {
 	k := shardKey{groupID, keyID}
 
 	n.mu.RLock()
@@ -554,8 +554,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// party.NewIDSlice sorts the slice, as required by the LSS protocol.
-	sortedParties := lss.NewPartyIDSlice(grp.Members)
+	sortedParties := tss.NewPartyIDSlice(grp.Members)
 	sessID := keygenSessionID(req.GroupID, keyID)
 
 	n.log.Info("keygen starting",
@@ -734,7 +733,7 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sortedSigners := lss.NewPartyIDSlice(grp.Members)
+	sortedSigners := tss.NewPartyIDSlice(grp.Members)
 	if !sortedSigners.Contains(cfg.ID) {
 		httpError(w, http.StatusBadRequest, "this node is not a member of group "+req.GroupID)
 		return

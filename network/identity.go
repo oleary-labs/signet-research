@@ -9,7 +9,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"golang.org/x/crypto/sha3"
 
-	"signet/lss"
+	"signet/tss"
 )
 
 // LoadOrGenerateKey loads a private key from path, or generates and saves a new secp256k1 key.
@@ -41,13 +41,13 @@ func LoadOrGenerateKey(path string) (crypto.PrivKey, error) {
 	return priv, nil
 }
 
-// PartyIDFromPrivKey derives lss.PartyID = lss.PartyID(peer.IDFromPrivateKey(priv).String()).
-func PartyIDFromPrivKey(priv crypto.PrivKey) (lss.PartyID, error) {
+// PartyIDFromPrivKey derives tss.PartyID from a libp2p private key.
+func PartyIDFromPrivKey(priv crypto.PrivKey) (tss.PartyID, error) {
 	pid, err := peer.IDFromPrivateKey(priv)
 	if err != nil {
 		return "", fmt.Errorf("peer ID from key: %w", err)
 	}
-	return lss.PartyID(pid.String()), nil
+	return tss.PartyID(pid.String()), nil
 }
 
 // EthereumAddress derives the Ethereum address from a secp256k1 public key.
@@ -72,9 +72,9 @@ func EthereumAddress(pub crypto.PubKey) ([20]byte, error) {
 	return addr, nil
 }
 
-// EthereumAddressFromPoint derives the Ethereum address from an lss.Point
+// EthereumAddressFromPoint derives the Ethereum address from a tss.Point
 // (e.g. as returned by cfg.PublicPoint()).
-func EthereumAddressFromPoint(pt *lss.Point) ([20]byte, error) {
+func EthereumAddressFromPoint(pt *tss.Point) ([20]byte, error) {
 	compressed, err := pt.MarshalBinary()
 	if err != nil {
 		return [20]byte{}, fmt.Errorf("marshal point: %w", err)
