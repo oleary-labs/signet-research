@@ -164,6 +164,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 			n.log.Warn("coord: keygen rejected, key already exists",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
+			s.Write([]byte{0}) // NACK
 			return
 		}
 
@@ -316,6 +317,10 @@ func (n *Node) broadcastCoord(ctx context.Context, targets []tss.PartyID, msg co
 			ack := make([]byte, 1)
 			if _, err := io.ReadFull(s, ack); err != nil {
 				ch <- result{pid, fmt.Errorf("ack from %s: %w", pid, err)}
+				return
+			}
+			if ack[0] == 0 {
+				ch <- result{pid, fmt.Errorf("rejected by %s", pid)}
 				return
 			}
 			ch <- result{pid, nil}
