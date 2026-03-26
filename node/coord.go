@@ -168,8 +168,10 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		}
 
 		sessID := keygenSessionID(msg.GroupID, msg.KeyID)
-		sn, err := network.NewSessionNetwork(n.ctx, n.host, sessID, msg.Parties)
+		sessCtx, sessCancel := context.WithTimeout(n.ctx, 30*time.Second)
+		sn, err := network.NewSessionNetwork(sessCtx, n.host, sessID, msg.Parties)
 		if err != nil {
+			sessCancel()
 			n.log.Error("coord: keygen session network",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID),
@@ -186,11 +188,12 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		s.Write([]byte{1})
 
 		go func() {
+			defer sessCancel()
 			defer sn.Close()
 			n.log.Info("coord: keygen started",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
-			cfg, err := runKeygenOn(n.ctx, n.host, sn, sessID, msg.Parties, msg.Threshold)
+			cfg, err := runKeygenOn(sessCtx, n.host, sn, sessID, msg.Parties, msg.Threshold)
 			if err != nil {
 				n.log.Error("coord: keygen failed",
 					zap.String("group_id", msg.GroupID),
@@ -216,8 +219,10 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 
 	case msgSign:
 		sessID := signSessionID(msg.GroupID, msg.KeyID, msg.SignNonce)
-		sn, err := network.NewSessionNetwork(n.ctx, n.host, sessID, msg.Signers)
+		sessCtx, sessCancel := context.WithTimeout(n.ctx, 30*time.Second)
+		sn, err := network.NewSessionNetwork(sessCtx, n.host, sessID, msg.Signers)
 		if err != nil {
+			sessCancel()
 			n.log.Error("coord: sign session network",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID),
@@ -227,6 +232,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		s.Write([]byte{1})
 
 		go func() {
+			defer sessCancel()
 			defer sn.Close()
 			n.log.Info("coord: sign started",
 				zap.String("group_id", msg.GroupID),
@@ -247,7 +253,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				return
 			}
 
-			_, err = runSignOn(n.ctx, n.host, sn, sessID, cfg, msg.Signers, msg.MessageHash)
+			_, err = runSignOn(sessCtx, n.host, sn, sessID, cfg, msg.Signers, msg.MessageHash)
 			if err != nil {
 				n.log.Error("coord: sign failed",
 					zap.String("group_id", msg.GroupID),
