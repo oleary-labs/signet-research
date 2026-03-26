@@ -59,11 +59,11 @@ Sequential latency is unchanged — single-threaded operations never hit the mut
 
 ### Remaining bottleneck: keygen under mixed load
 
-Keygen throughput collapses to ~1 ops/sec under mixed load (vs 19 ops/sec standalone). Keygen is a 2-round interactive protocol with more expensive per-round crypto (DKG polynomial evaluation, commitment verification). Under contention with faster sign operations, keygen sessions get starved for GossipSub message delivery and CPU time.
+Keygen throughput collapses to ~1 ops/sec under mixed load (vs 19 ops/sec standalone). Keygen is a 2-round interactive protocol with more expensive per-round crypto (DKG polynomial evaluation, commitment verification). Under contention with faster sign operations, keygen sessions get starved for session stream delivery and CPU time.
 
 ### Throughput ceiling
 
-Concurrent sign tops out at ~34 ops/sec across 3 nodes. The bottleneck is now the 2-round interactive protocol itself — each sign requires 2 network round-trips through GossipSub, and all participants must complete each round before the next begins. On localhost (sub-millisecond RTT), the floor is set by FROST cryptographic operations (commitment, partial signature, aggregation).
+Concurrent sign tops out at ~34 ops/sec across 3 nodes. The bottleneck is now the 2-round interactive protocol itself — each sign requires 2 network round-trips via direct libp2p streams, and all participants must complete each round before the next begins. On localhost (sub-millisecond RTT), the floor is set by FROST cryptographic operations (commitment, partial signature, aggregation).
 
 ### Multi-node consistency window
 

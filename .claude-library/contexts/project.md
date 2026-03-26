@@ -6,7 +6,7 @@ Research project implementing a threshold signing network. Uses a custom LSS (Li
 ## Tech Stack
 - **Language**: Go 1.24+
 - **Threshold crypto**: `signet/lss` (internal — secp256k1 LSS keygen/sign/reshare via `github.com/decred/dcrd/dcrec/secp256k1/v4`)
-- **P2P networking**: `github.com/libp2p/go-libp2p` + Kademlia DHT + GossipSub
+- **P2P networking**: `github.com/libp2p/go-libp2p` (direct streams for protocol messages, Kademlia DHT for discovery)
 - **Testing**: `github.com/stretchr/testify`
 
 ## Project Structure

@@ -104,7 +104,7 @@ When finishing a task, always provide a brief summary of:
 - `github.com/ethereum/go-ethereum v1.17.1` — chain client, ABI, crypto
 - `github.com/lestrrat-go/jwx/v2` — JWT parsing/verification, JWKS caching (jwk, jwt, jwa)
 - `github.com/fxamacker/cbor/v2` — CBOR encoding for coord messages
-- `github.com/libp2p/go-libp2p` — P2P networking (streams, GossipSub)
+- `github.com/libp2p/go-libp2p` — P2P networking (direct streams for coord + protocol messages)
 - `go.etcd.io/bbolt` — key shard persistence
 
 ### Solidity Dependencies

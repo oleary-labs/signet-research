@@ -17,7 +17,7 @@ How auth should be handled - particularly from the 'end user' perspective
 2. Where does the authorization policy live? On-chain (factory/group contract), off-chain node config, or trusted from the OAuth token itself?
 3. Do you want EIP-712 user signatures (Option C), or is OAuth-only sufficient for the first pass?
 4. What does "every step" mean in practice? The session approach (validate once at coord, associate with session ID) seems sufficient — or do you
-   want the credential re-checked at each GossipSub round?
+   want the credential re-checked at each protocol round?
 
 Implementation specifics:
 * Preferred option: Raw OAuth JWT propagated

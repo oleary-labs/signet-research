@@ -322,21 +322,15 @@ Each node's libp2p peer ID is derived from a persistent secp256k1 private key (`
 
 When a node receives a keygen or sign request it acts as the **initiator**:
 
-1. Subscribes to the session's GossipSub topic (so it is ready before peers start sending)
-2. Opens a direct libp2p stream (`/signet/coord/1.0.0`) to each other party and sends a CBOR-encoded invitation containing the session parameters
-3. Each receiving node subscribes to the topic, then sends a ready ACK
-4. The initiator waits for all ACKs, pauses briefly for the GossipSub mesh to form, then starts the CMP protocol handler
+1. Opens a direct libp2p stream (`/signet/coord/1.0.0`) to each other party in parallel and sends a CBOR-encoded invitation containing the session parameters
+2. Each receiving node registers a session stream handler for the session protocol ID, then sends a ready ACK
+3. The initiator waits for all ACKs, then starts the FROST protocol handler
 
 ### Message transport
 
-The LSS protocol sends two kinds of messages per round:
+All protocol messages are sent via direct libp2p streams using a session-scoped protocol ID (`/threshold/session/<sessionID>/1.0.0`). Both broadcast and unicast messages use direct streams — broadcasts are fanned out as individual unicast sends to each peer.
 
-| Type | Transport | How |
-|---|---|---|
-| Directed (unicast) | libp2p stream | `/signet/session/1.0.0` protocol, CBOR payload |
-| Broadcast | GossipSub | `/signet/session/<id>` topic, CBOR payload |
-
-A `SessionNetwork` joins the per-session GossipSub topic and fans both message types into a single `Incoming()` channel. `lss.Run()` drives the round state machine: it calls `Finalize()`, sends outgoing messages, and advances rounds as messages arrive.
+A `SessionNetwork` registers a handler for the session protocol and fans inbound messages into a single `Incoming()` channel. `tss.Run()` drives the round state machine: it calls `Finalize()`, sends outgoing messages, and advances rounds as messages arrive.
 
 ### Protocol
 
