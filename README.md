@@ -1,22 +1,45 @@
 # signet
 
-Research implementation of a threshold signing network using a custom LSS (Linear Secret Sharing) MPC protocol over libp2p.
+Research implementation of a threshold signing network using FROST (RFC 9591) on secp256k1.
 
-Nodes hold persistent secp256k1 identities, connect to each other over a libp2p mesh, and expose an HTTP API for distributed key generation and threshold signing. Signatures are produced in Ethereum-compatible format (65-byte R+S+V).
+Nodes hold persistent secp256k1 identities, connect over a libp2p mesh, and expose an HTTP API for distributed key generation and threshold signing. Signatures are produced in Ethereum-compatible format (65-byte R+S+V).
 
-A client sends a single request to **any one node** in the group. That node coordinates the session with the other participants automatically — no need to contact every node separately.
+Group membership and trust configuration are managed on-chain via `SignetFactory` and `SignetGroup` smart contracts. An optional ZK-based authentication layer lets clients prove OAuth identity without forwarding JWTs to the network.
+
+A client sends a single request to **any one node** in the group. That node coordinates the session with the other participants automatically.
 
 ---
 
 ## Contents
 
+- [Repository layout](#repository-layout)
 - [Build](#build)
 - [Configuration](#configuration)
 - [Running a network](#running-a-network)
 - [API reference](#api-reference)
+- [Authentication](#authentication)
 - [End-to-end walkthrough](#end-to-end-walkthrough)
 - [Running tests](#running-tests)
 - [Architecture notes](#architecture-notes)
+
+---
+
+## Repository layout
+
+```
+cmd/signetd/       — node binary
+cmd/devnet-init/   — key-init helper used by devnet scripts
+cmd/harness/       — multi-node test harness (correctness + performance)
+cmd/zkbench/       — ZK proof benchmark tool
+node/              — HTTP API, coordinator, chain client, auth
+signet/tss/        — FROST adapter (keygen/sign round runner)
+signet/lss/        — LSS internal threshold math
+network/           — libp2p host + session network
+contracts/         — Solidity (Foundry): SignetFactory, SignetGroup
+circuits/jwt_auth/ — Noir ZK circuit: JWT → session key binding
+devnet/            — local devnet scripts (Anvil + 3 nodes)
+docs/              — design and security documents
+```
 
 ---
 
@@ -33,19 +56,40 @@ go build ./cmd/signetd/
 
 The binary is `./signetd`.
 
+**Contracts** (requires [Foundry](https://getfoundry.sh)):
+
+```bash
+cd contracts && forge build
+```
+
+**ZK circuit** (requires [nargo](https://noir-lang.org) + [bb](https://github.com/AztecProtocol/aztec-packages)):
+
+```bash
+cd circuits/jwt_auth
+nargo compile --force
+```
+
 ---
 
 ## Configuration
 
-On first run `signetd` writes a default `config.yaml` if none exists:
+`signetd` reads a YAML config file (default `./config.yaml`). A default file is written on first run.
 
 ```yaml
-key_file: ./data/node.key             # secp256k1 identity key (created on first run)
-listen_addr: /ip4/0.0.0.0/tcp/9000   # libp2p listen multiaddr
-api_addr: :8080                       # HTTP API listen address
-announce_addr: ""                     # optional public multiaddr to advertise
-bootstrap_peers: []                   # multiaddrs of peers to dial on startup
-node_type: public                     # "public" or "permissioned"
+data_dir:         ./data                       # directory for node.key and keyshards.db
+listen_addr:      /ip4/0.0.0.0/tcp/9000        # libp2p listen multiaddr
+api_addr:         :8080                        # HTTP API listen address
+announce_addr:    ""                           # optional public multiaddr to advertise
+bootstrap_peers:  []                           # multiaddrs of peers to dial on startup
+node_type:        public                       # "public" or "permissioned"
+
+# Blockchain integration (required to resolve group membership)
+eth_rpc:          ""                           # e.g. http://localhost:8545
+factory_address:  ""                           # SignetFactory contract address (0x...)
+
+# Auth options
+test_mode:        false                        # skip JWT sig/expiry checks; accept raw JWTs at /v1/auth
+vk_path:          ""                           # path to circuit verification key (required for ZK auth)
 ```
 
 Pass a custom config file with `-config`:
@@ -54,9 +98,7 @@ Pass a custom config file with `-config`:
 ./signetd -config node1.yaml
 ```
 
-### Log level
-
-Control verbosity with `-log-level` (default `info`):
+Control log verbosity with `-log-level` (default `info`):
 
 ```bash
 ./signetd -config node1.yaml -log-level debug
@@ -68,66 +110,65 @@ Accepted values: `debug`, `info`, `warn`, `error`.
 
 ## Running a network
 
-### Local three-node setup
+### Quickstart: local devnet
 
-**Node 1** — start first, note the peer ID printed at startup:
+The devnet scripts start Anvil, deploy the contracts, register three nodes, create a signing group, and launch all three `signetd` processes in one command:
+
+```bash
+devnet/start.sh
+```
+
+See [devnet/README.md](devnet/README.md) for full details, port assignments, and cleanup commands.
+
+### Manual three-node setup
+
+If you want to run nodes manually (without the devnet scripts), you need:
+
+1. A running Ethereum RPC endpoint (`eth_rpc`) with the factory contract deployed.
+2. Nodes registered on-chain and added to a group — groups are resolved from the chain at startup.
+
+**Node 1:**
 
 ```bash
 cat > node1.yaml <<EOF
-key_file: ./data/node1.key
-listen_addr: /ip4/0.0.0.0/tcp/9000
-api_addr: :8080
-node_type: public
+data_dir:        ./data/node1
+listen_addr:     /ip4/0.0.0.0/tcp/9000
+api_addr:        :8080
+eth_rpc:         http://localhost:8545
+factory_address: 0xYourFactoryAddress
 EOF
 
+mkdir -p data/node1
 ./signetd -config node1.yaml
-# INFO  node ready  {"peer_id": "16Uiu2HAmXXX...", "addrs": ["/ip4/0.0.0.0/tcp/9000"]}
+# INFO  node ready  {"peer_id": "16Uiu2HAmXXX...", ...}
 ```
 
-**Node 2** — use node 1's peer ID in `bootstrap_peers`:
+**Nodes 2 and 3** — include node 1's multiaddr in `bootstrap_peers`:
 
 ```bash
 cat > node2.yaml <<EOF
-key_file: ./data/node2.key
-listen_addr: /ip4/0.0.0.0/tcp/9001
-api_addr: :8081
+data_dir:         ./data/node2
+listen_addr:      /ip4/0.0.0.0/tcp/9001
+api_addr:         :8081
 bootstrap_peers:
   - /ip4/127.0.0.1/tcp/9000/p2p/16Uiu2HAmXXX...
-node_type: public
+eth_rpc:          http://localhost:8545
+factory_address:  0xYourFactoryAddress
 EOF
 
+mkdir -p data/node2
 ./signetd -config node2.yaml
-# INFO  connected to bootstrap peer  {"peer": "16Uiu2HAmXXX..."}
 ```
-
-**Node 3** — bootstrap from either existing node:
-
-```bash
-cat > node3.yaml <<EOF
-key_file: ./data/node3.key
-listen_addr: /ip4/0.0.0.0/tcp/9002
-api_addr: :8082
-bootstrap_peers:
-  - /ip4/127.0.0.1/tcp/9000/p2p/16Uiu2HAmXXX...
-node_type: public
-EOF
-
-./signetd -config node3.yaml
-```
-
-Once all three nodes are running and connected, proceed to the walkthrough below.
-
-### Key persistence
-
-After keygen, each node writes its secret share to `data/<session_id>.config` (CBOR, mode `0600`). On a subsequent sign request, the file is loaded automatically if the config is not already in memory.
 
 ---
 
 ## API reference
 
-All endpoints speak JSON. Keygen and sign requests **block** until the protocol completes and return the result to the caller.
+All endpoints speak JSON. Keygen and sign requests **block** until the protocol completes.
 
-**A client only needs to contact one node.** The receiving node coordinates with the other participants over the internal `/signet/coord/1.0.0` libp2p protocol — it sends each other party a CBOR-encoded session invitation, waits for ready ACKs, then starts the cryptographic protocol once all parties have joined.
+**A client only needs to contact one node.** The receiving node coordinates with the other group members over the internal `/signet/coord/1.0.0` libp2p protocol.
+
+Group membership and threshold are resolved from the chain — they are not passed in API requests.
 
 ### `GET /v1/health`
 
@@ -153,12 +194,18 @@ Returns this node's identity.
 
 ### `GET /v1/keys`
 
-Lists all keygen configs held in memory (public metadata only).
+Lists all key shards held by this node.
+
+```
+GET /v1/keys                       — all groups
+GET /v1/keys?group_id=0xGroupAddr  — one group
+```
 
 ```json
 [
   {
-    "session_id":       "mykey1",
+    "group_id":         "0x...",
+    "key_id":           "k1",
     "ethereum_address": "0xabc123...",
     "threshold":        1,
     "parties":          ["16Uiu2HAm...", "16Uiu2HAm...", "16Uiu2HAm..."]
@@ -166,31 +213,90 @@ Lists all keygen configs held in memory (public metadata only).
 ]
 ```
 
-### `POST /v1/keygen`
+### `POST /v1/auth`
 
-Runs a distributed key generation session (LSS protocol, 3 rounds).
+Registers an ephemeral session key bound to a verified identity. Required before keygen/sign on groups that have OAuth issuers configured.
 
-Send to **any one node** in the `parties` list. It will coordinate with the others.
-
-Request:
+**Test mode** (`test_mode: true` in config):
 
 ```json
 {
-  "session_id": "mykey1",
-  "parties":    ["16Uiu2HAm...", "16Uiu2HAm...", "16Uiu2HAm..."],
-  "threshold":  1
+  "group_id":    "0x...",
+  "token":       "eyJ...",
+  "session_pub": "02abc..."
 }
 ```
 
-- `session_id` — unique identifier for this key; used as the session topic name and the filename for the persisted config
-- `parties` — peer IDs of every participating node (obtain from `GET /v1/info` on each node)
-- `threshold` — maximum corruptions tolerated; `threshold + 1` parties are required to produce a signature
+- `token` — a raw JWT; signature and expiry are verified against the group's trusted issuers
+- `session_pub` — 33-byte compressed secp256k1 public key (hex)
 
-Response (once the protocol completes):
+**Production mode**:
 
 ```json
 {
-  "session_id":       "mykey1",
+  "group_id":     "0x...",
+  "proof":        "hex...",
+  "session_pub":  "02abc...",
+  "sub":          "user@example.com",
+  "iss":          "https://accounts.google.com",
+  "exp":          1709900000,
+  "aud":          "app.example.com",
+  "azp":          "client-id",
+  "jwks_modulus": "hex..."
+}
+```
+
+- `proof` — Barretenberg ZK proof (hex) generated by the client
+- `jwks_modulus` — RSA-2048 public key modulus used to verify the proof (hex)
+- The node verifies the proof via `bb verify` against the circuit VK at `vk_path`
+
+Response:
+
+```json
+{
+  "status":     "ok",
+  "sub":        "user@example.com",
+  "expires_at": 1709900000
+}
+```
+
+### `POST /v1/keygen`
+
+Runs a distributed key generation session (FROST, 3 rounds).
+
+**Without auth** (groups without issuers):
+
+```json
+{
+  "group_id": "0xGroupAddr",
+  "key_id":   "k1"
+}
+```
+
+**With session auth** (groups with issuers):
+
+```json
+{
+  "group_id":    "0xGroupAddr",
+  "key_suffix":  "optional-label",
+  "session_pub": "02abc...",
+  "request_sig": "64-byte-hex",
+  "nonce":       "hex",
+  "timestamp":   1709900000
+}
+```
+
+- `group_id` — group contract address (lower-cased)
+- `key_id` — caller-chosen label scoped to the group; must be unique within the group
+- `key_suffix` — with auth: appended to the resolved key ID as `sub:suffix`
+- `session_pub` / `request_sig` / `nonce` / `timestamp` — session-auth fields (see [Authentication](#authentication))
+
+Response:
+
+```json
+{
+  "group_id":         "0x...",
+  "key_id":           "k1",
   "public_key":       "0x03abcd...",
   "ethereum_address": "0xabc123..."
 }
@@ -198,31 +304,40 @@ Response (once the protocol completes):
 
 ### `POST /v1/sign`
 
-Runs a threshold signing session (LSS protocol, 3 rounds).
+Runs a threshold signing session (FROST, 3 rounds).
 
-Send to **any one node** in the `signers` list. It will coordinate with the others.
-
-Request:
+**Without auth:**
 
 ```json
 {
-  "key_session_id":  "mykey1",
-  "sign_session_id": "sign-001",
-  "signers":         ["16Uiu2HAm...", "16Uiu2HAm..."],
-  "message_hash":    "0xdeadbeef..."
+  "group_id":     "0xGroupAddr",
+  "key_id":       "k1",
+  "message_hash": "0xdeadbeef..."
 }
 ```
 
-- `key_session_id` — the `session_id` used during keygen
-- `sign_session_id` — unique identifier for this signing round; must differ for every signature
-- `signers` — peer IDs of the signing subset; must include the node being contacted and satisfy `threshold + 1`
+**With session auth:**
+
+```json
+{
+  "group_id":     "0xGroupAddr",
+  "key_suffix":   "optional-label",
+  "message_hash": "0xdeadbeef...",
+  "session_pub":  "02abc...",
+  "request_sig":  "64-byte-hex",
+  "nonce":        "hex",
+  "timestamp":    1709900000
+}
+```
+
 - `message_hash` — 32-byte hash to sign (hex, `0x` prefix optional)
 
 Response:
 
 ```json
 {
-  "sign_session_id":    "sign-001",
+  "group_id":           "0x...",
+  "key_id":             "k1",
   "ethereum_signature": "0x..."
 }
 ```
@@ -231,61 +346,71 @@ The signature is 65 bytes in Ethereum format (R ++ S ++ V).
 
 ---
 
+## Authentication
+
+Groups can be created with one or more trusted OAuth issuers. When a group has issuers configured, keygen and sign requests require authentication.
+
+### Session key scheme
+
+To avoid forwarding raw JWTs across the network:
+
+1. The client obtains an OAuth JWT and generates an ephemeral secp256k1 keypair.
+2. The client calls `POST /v1/auth` with either the raw JWT (test mode) or a ZK proof binding the JWT to the session public key (production).
+3. The node verifies the credential and caches the session binding (`session_pub → sub`).
+4. For subsequent keygen/sign requests, the client signs a canonical request hash with the session private key and includes `session_pub`, `request_sig`, `nonce`, and `timestamp`.
+
+The canonical request hash is `SHA256(group_id : key_id : nonce : timestamp_8bytes_BE [: message_hash])`.
+
+### ZK auth (production)
+
+The Noir circuit at `circuits/jwt_auth/` proves that a valid JWT signed by a trusted RSA key commits to a given session public key, without revealing the JWT to the network. The `bb verify` binary must be on `PATH` or at `~/.bb/bb`, and `vk_path` must point to the compiled circuit verification key.
+
+See [docs/DESIGN-ZK-AUTH.md](docs/DESIGN-ZK-AUTH.md) and [docs/SECURITY-ANALYSIS.md](docs/SECURITY-ANALYSIS.md) for the full design and threat model.
+
+---
+
 ## End-to-end walkthrough
 
-This example uses three nodes running locally at ports 8080–8082. Substitute the actual peer IDs from your nodes.
-
-### 1. Fetch peer IDs
+This example uses the devnet (three nodes at ports 8080–8082, no auth).
 
 ```bash
-NODE1=$(curl -s :8080/v1/info | jq -r .peer_id)
-NODE2=$(curl -s :8081/v1/info | jq -r .peer_id)
-NODE3=$(curl -s :8082/v1/info | jq -r .peer_id)
-
-echo $NODE1 $NODE2 $NODE3
+devnet/start.sh
+source devnet/.env   # sets GROUP_ADDRESS, RPC_URL, etc.
 ```
 
-### 2. Keygen (threshold = 1, any 2-of-3 can sign)
-
-Send a single request to node 1. It contacts nodes 2 and 3 automatically.
+### 1. Keygen
 
 ```bash
-curl -s -X POST :8080/v1/keygen \
+curl -s -X POST http://localhost:8080/v1/keygen \
   -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg a "$NODE1" --arg b "$NODE2" --arg c "$NODE3" \
-    '{"session_id":"mykey1","parties":[$a,$b,$c],"threshold":1}')"
+  -d "{\"group_id\":\"$GROUP_ADDRESS\",\"key_id\":\"k1\"}" | jq .
 ```
-
-Response:
 
 ```json
 {
-  "session_id":       "mykey1",
+  "group_id":         "0x...",
+  "key_id":           "k1",
   "public_key":       "0x03abcd...",
   "ethereum_address": "0xabc123..."
 }
 ```
 
-All three nodes now hold their secret shares. The public key and Ethereum address are the same on every node.
+All three nodes now hold their secret shares.
 
-### 3. Sign a message hash
-
-Send a single request to node 1. It contacts node 2 automatically.
+### 2. Sign
 
 ```bash
-HASH="0x$(openssl dgst -sha256 -binary <<< 'hello signet' | xxd -p -c 32)"
+HASH="0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
-curl -s -X POST :8080/v1/sign \
+curl -s -X POST http://localhost:8080/v1/sign \
   -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg a "$NODE1" --arg b "$NODE2" --arg h "$HASH" \
-    '{"key_session_id":"mykey1","sign_session_id":"sign-001","signers":[$a,$b],"message_hash":$h}')"
+  -d "{\"group_id\":\"$GROUP_ADDRESS\",\"key_id\":\"k1\",\"message_hash\":\"$HASH\"}" | jq .
 ```
-
-Response:
 
 ```json
 {
-  "sign_session_id":    "sign-001",
+  "group_id":           "0x...",
+  "key_id":             "k1",
   "ethereum_signature": "0x..."
 }
 ```
@@ -297,17 +422,19 @@ The 65-byte signature can be verified on-chain against the Ethereum address retu
 ## Running tests
 
 ```bash
-# All tests (includes libp2p keygen integration test, ~1 min)
+# Go: node + network + threshold math
 go test ./...
 
-# Verbose output
-go test -v ./...
+# Verbose with timeout (includes libp2p integration tests)
+go test -v -timeout 3m ./...
 
-# Just the fast unit tests
-go test -run TestEthereumAddress ./...
+# Solidity contracts (requires Foundry)
+cd contracts && forge test
 
-# Just the keygen integration test
-go test -v -run TestLibp2pKeygen -timeout 3m ./...
+# ZK circuit (requires nargo + bb)
+cd circuits/jwt_auth && nargo compile --force && nargo execute bench_witness
+bb prove -b target/jwt_auth.json -w target/bench_witness.gz -o target/proof --write_vk
+bb verify -k target/proof/vk -p target/proof/proof -i target/proof/public_inputs
 ```
 
 ---
@@ -316,26 +443,33 @@ go test -v -run TestLibp2pKeygen -timeout 3m ./...
 
 ### Identity
 
-Each node's libp2p peer ID is derived from a persistent secp256k1 private key (`key_file`). This same key is used as the node's `lss.PartyID` in the LSS protocol — threshold key shares are permanently bound to the node's network identity.
+Each node's libp2p peer ID is derived from a persistent secp256k1 private key stored in `data_dir/node.key`. The same key produces the node's Ethereum address, which is registered on-chain in `SignetFactory`.
+
+### Group membership
+
+Group membership is not passed in API requests. At startup, the chain client calls `getNodeGroups(myAddr)` on the factory to discover which groups this node belongs to, then loads membership and threshold from each group contract. It polls every two seconds for `NodeActivatedInGroup`, `NodeDeactivatedInGroup`, and issuer events to stay in sync with chain state.
 
 ### Session coordination
 
 When a node receives a keygen or sign request it acts as the **initiator**:
 
-1. Opens a direct libp2p stream (`/signet/coord/1.0.0`) to each other party in parallel and sends a CBOR-encoded invitation containing the session parameters
-2. Each receiving node registers a session stream handler for the session protocol ID, then sends a ready ACK
-3. The initiator waits for all ACKs, then starts the FROST protocol handler
+1. Opens a direct libp2p stream (`/signet/coord/1.0.0`) to each other party and sends a CBOR-encoded session invitation (type, group ID, key ID, auth proof if present).
+2. Each receiving node verifies the auth proof independently, registers a session stream handler, and sends a ready ACK.
+3. The initiator waits for all ACKs, then starts the FROST protocol.
 
 ### Message transport
 
-All protocol messages are sent via direct libp2p streams using a session-scoped protocol ID (`/threshold/session/<sessionID>/1.0.0`). Both broadcast and unicast messages use direct streams — broadcasts are fanned out as individual unicast sends to each peer.
-
-A `SessionNetwork` registers a handler for the session protocol and fans inbound messages into a single `Incoming()` channel. `tss.Run()` drives the round state machine: it calls `Finalize()`, sends outgoing messages, and advances rounds as messages arrive.
+All protocol messages travel over direct libp2p streams using a session-scoped protocol ID. Broadcast messages are fanned out as individual unicast sends. A `SessionNetwork` fans inbound messages into a single channel that the round-state machine consumes.
 
 ### Protocol
 
-LSS (Linear Secret Sharing) is a 3-round semi-honest threshold ECDSA protocol. Keygen runs 3 rounds; signing runs 3 rounds. After keygen every party holds a distinct secret share; during signing, `threshold + 1` parties collaborate to reconstruct the signature without any party ever holding the full private key.
+FROST (RFC 9591) adapted to secp256k1. Keygen runs 3 rounds; signing runs 3 rounds. After keygen every party holds a distinct secret share; during signing, `threshold + 1` parties collaborate to produce a signature without any party ever reconstructing the full private key.
 
 ### Key storage
 
-After keygen, each party's secret share is persisted to `data/<session_id>.config` using CBOR serialization (the library's own `MarshalBinary` format). The file is written with mode `0600`. On a sign request, configs are loaded from disk on first access and cached in memory for subsequent requests.
+Key shards are persisted in a bbolt database (`data_dir/keyshards.db`) in nested buckets: `keyshards → <groupID> → <keyID> → JSON`. Shards are loaded on first access and cached in memory.
+
+### Smart contracts
+
+- `SignetFactory` — UUPS upgradeable factory. Registers nodes, deploys `SignetGroup` beacon proxies, maintains a reverse mapping of node → groups.
+- `SignetGroup` — Per-group state: active member set, threshold, OAuth issuer registry with time-delayed add/remove. Notifies the factory on member activation/deactivation.
