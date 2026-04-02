@@ -209,31 +209,45 @@ func (g *GroupAuth) ValidateJWTForSession(ctx context.Context, groupID string, t
 		}
 	}
 
-	// Step 6: check azp / client_id.
-	azp := ""
-	if v, ok := verified.PrivateClaims()["azp"]; ok {
-		azp, _ = v.(string)
+	// Extract audience (first value if multiple) before the client check so it
+	// can serve as a fallback client identity.
+	aud := ""
+	if auds := verified.Audience(); len(auds) > 0 {
+		aud = auds[0]
 	}
-	if azp == "" {
-		if v, ok := verified.PrivateClaims()["client_id"]; ok {
-			azp, _ = v.(string)
+
+	// Step 6: resolve client identity (azp → client_id private claim → aud[0])
+	// and enforce the group's ClientIds allowlist.
+	//
+	// Precedence: azp is the canonical OAuth 2.0 authorized-party claim (used
+	// by Google, etc.); some providers use a private client_id claim; others
+	// encode the client ID in aud. Falling back to aud[0] covers the latter
+	// without requiring callers to know which convention applies.
+	azp := ""
+	for _, key := range []string{"azp", "client_id"} {
+		if v, ok := verified.PrivateClaims()[key]; ok {
+			if s, _ := v.(string); s != "" {
+				azp = s
+				break
+			}
 		}
 	}
+	clientID := azp
+	if clientID == "" {
+		clientID = aud
+	}
 	if len(matched.ClientIds) > 0 {
-		if azp != "" && !containsString(matched.ClientIds, azp) {
-			return nil, fmt.Errorf("untrusted client_id: %s", azp)
+		if clientID == "" {
+			return nil, fmt.Errorf("token missing client identity (azp/client_id/aud) required by this group's allowlist")
+		}
+		if !containsString(matched.ClientIds, clientID) {
+			return nil, fmt.Errorf("untrusted client_id: %s", clientID)
 		}
 	}
 
 	sub := verified.Subject()
 	if sub == "" {
 		return nil, fmt.Errorf("token missing sub claim")
-	}
-
-	// Extract audience (first value if multiple).
-	aud := ""
-	if auds := verified.Audience(); len(auds) > 0 {
-		aud = auds[0]
 	}
 
 	return &SessionClaims{
