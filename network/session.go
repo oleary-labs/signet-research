@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	stdlog "log"
+	"strings"
+	"sync"
+	"time"
 
 	libp2pnet "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -28,6 +31,7 @@ type SessionNetwork struct {
 	incoming chan *tss.Message
 	ctx      context.Context
 	cancel   context.CancelFunc
+	sendWG   sync.WaitGroup
 }
 
 // NewSessionNetwork creates a session-scoped network for the given parties.
@@ -80,29 +84,58 @@ func (sn *SessionNetwork) Send(msg *tss.Message) {
 			if !ok {
 				continue
 			}
-			go sn.sendTo(peerID, msg)
+				sn.sendWG.Add(1)
+			go func(id peer.ID) {
+				defer sn.sendWG.Done()
+				sn.sendTo(id, msg)
+			}(peerID)
 		}
 	} else {
 		peerID, ok := sn.host.PeerForParty(msg.To)
 		if !ok {
 			return
 		}
-		go sn.sendTo(peerID, msg)
+		sn.sendWG.Add(1)
+		go func() {
+			defer sn.sendWG.Done()
+			sn.sendTo(peerID, msg)
+		}()
 	}
 }
 
 // sendTo opens a stream on the session protocol ID and writes msg.
+// It retries with brief backoff when the remote peer hasn't registered its
+// session handler yet ("protocols not supported"), which can happen transiently
+// when multiple participants start their sign goroutines at slightly different
+// times.
 func (sn *SessionNetwork) sendTo(target peer.ID, msg *tss.Message) {
 	stdlog.Printf("[sendTo] session=%s self=%s -> target=%s from=%s to=%q round=%d broadcast=%v",
 		sn.sessionID, sn.self, target, msg.From, msg.To, msg.Round, msg.Broadcast)
-	s, err := sn.host.LibP2PHost().NewStream(sn.ctx, target, sn.protocolID)
-	if err != nil {
-		stdlog.Printf("[sendTo] session=%s self=%s NewStream to %s FAILED: %v", sn.sessionID, sn.self, target, err)
+
+	const maxRetries = 8
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(attempt*10) * time.Millisecond
+			select {
+			case <-sn.ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+		}
+
+		s, err := sn.host.LibP2PHost().NewStream(sn.ctx, target, sn.protocolID)
+		if err != nil {
+			if attempt < maxRetries && strings.Contains(err.Error(), "protocols not supported") {
+				continue
+			}
+			stdlog.Printf("[sendTo] session=%s self=%s NewStream to %s FAILED: %v", sn.sessionID, sn.self, target, err)
+			return
+		}
+		defer s.Close()
+		if err := writeMessage(s, msg); err != nil {
+			stdlog.Printf("[sendTo] session=%s self=%s writeMessage to %s FAILED: %v", sn.sessionID, sn.self, target, err)
+		}
 		return
-	}
-	defer s.Close()
-	if err := writeMessage(s, msg); err != nil {
-		stdlog.Printf("[sendTo] session=%s self=%s writeMessage to %s FAILED: %v", sn.sessionID, sn.self, target, err)
 	}
 }
 
@@ -117,8 +150,11 @@ func (sn *SessionNetwork) Next() <-chan *tss.Message {
 	return sn.incoming
 }
 
-// Close removes the session's stream handler and closes the incoming channel.
+// Close waits for all in-flight sends to complete, then removes the session's
+// stream handler and closes the incoming channel. Waiting before canceling
+// the context ensures sendTo goroutines aren't interrupted mid-send.
 func (sn *SessionNetwork) Close() {
+	sn.sendWG.Wait()
 	sn.cancel()
 	sn.host.LibP2PHost().RemoveStreamHandler(sn.protocolID)
 	close(sn.incoming)

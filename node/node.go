@@ -17,8 +17,8 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
 
-	"signet/tss"
 	"signet/network"
+	"signet/tss"
 )
 
 // shardKey is the composite cache key for a stored key shard.
@@ -43,13 +43,11 @@ type Node struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	store   *KeyShardStore
-	mu      sync.RWMutex
-	configs map[shardKey]*tss.Config // in-memory cache: (group_id, key_id) → key config
+	km KeyManager // key management: LocalKeyManager (in-process) or RemoteKeyManager (KMS)
 
-	// keygenReady tracks in-flight keygen operations so that sign handlers
-	// arriving before the keygen has persisted its config can wait instead of
-	// immediately failing with "key not found".
+	// keygenReady tracks in-flight keygen operations so that sign coord
+	// handlers arriving before the keygen has completed can wait instead
+	// of immediately failing with "key not found".
 	keygenReadyMu sync.Mutex
 	keygenReady   map[shardKey]chan struct{}
 
@@ -91,11 +89,19 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		return nil, fmt.Errorf("create host: %w", err)
 	}
 
-	store, err := openKeyShardStore(cfg.DataDir)
-	if err != nil {
-		h.Close()
-		cancel()
-		return nil, fmt.Errorf("open key shard store: %w", err)
+	// Create the key manager: RemoteKeyManager when a KMS socket is
+	// configured, LocalKeyManager (in-process tss) otherwise.
+	var km KeyManager
+	if cfg.KMSSocket != "" {
+		km = NewRemoteKeyManager(cfg.KMSSocket)
+	} else {
+		lkm, err := NewLocalKeyManager(ctx, cfg.DataDir, log)
+		if err != nil {
+			h.Close()
+			cancel()
+			return nil, fmt.Errorf("local key manager: %w", err)
+		}
+		km = lkm
 	}
 
 	// Parse bootstrap peer addresses; bail out on malformed entries.
@@ -103,14 +109,14 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 	for _, bpStr := range cfg.BootstrapPeers {
 		maddr, err := ma.NewMultiaddr(bpStr)
 		if err != nil {
-			store.Close()
+			km.Close()
 			h.Close()
 			cancel()
 			return nil, fmt.Errorf("parse bootstrap peer %q: %w", bpStr, err)
 		}
 		pi, err := peer.AddrInfoFromP2pAddr(maddr)
 		if err != nil {
-			store.Close()
+			km.Close()
 			h.Close()
 			cancel()
 			return nil, fmt.Errorf("addr info from %q: %w", bpStr, err)
@@ -149,7 +155,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		var err error
 		circuitVK, err = os.ReadFile(cfg.VKPath)
 		if err != nil {
-			store.Close()
+			km.Close()
 			h.Close()
 			cancel()
 			return nil, fmt.Errorf("read circuit VK from %s: %w", cfg.VKPath, err)
@@ -163,8 +169,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		log:            log,
 		ctx:            ctx,
 		cancel:         cancel,
-		store:          store,
-		configs:        make(map[shardKey]*tss.Config),
+		km:             km,
 		keygenReady:    make(map[shardKey]chan struct{}),
 		groups:         make(map[string]*GroupInfo),
 		auth:           newGroupAuth(ctx, cfg.TestMode, circuitVK, log),
@@ -178,7 +183,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 	if cfg.EthRPC != "" && cfg.FactoryAddress != "" {
 		chain, err := newChainClient(cfg, h, n, log)
 		if err != nil {
-			store.Close()
+			km.Close()
 			h.Close()
 			cancel()
 			return nil, fmt.Errorf("chain client: %w", err)
@@ -228,8 +233,8 @@ func (n *Node) Stop() error {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
 	n.host.Close()
-	if err := n.store.Close(); err != nil {
-		n.log.Warn("close key shard store", zap.Error(err))
+	if err := n.km.Close(); err != nil {
+		n.log.Warn("close key manager", zap.Error(err))
 	}
 	n.cancel()
 	n.log.Info("node stopped")
@@ -257,34 +262,8 @@ func (n *Node) Info() NodeInfo {
 	}
 }
 
-// cachedConfig returns a config from the in-memory cache, or loads it from the
-// store and caches it. Returns (nil, nil) when the (groupID, keyID) is not found.
-func (n *Node) cachedConfig(groupID, keyID string) (*tss.Config, error) {
-	k := shardKey{groupID, keyID}
-
-	n.mu.RLock()
-	cfg, ok := n.configs[k]
-	n.mu.RUnlock()
-	if ok {
-		return cfg, nil
-	}
-
-	cfg, err := n.store.Get(groupID, keyID)
-	if err != nil {
-		return nil, err
-	}
-	if cfg == nil {
-		return nil, nil
-	}
-
-	n.mu.Lock()
-	n.configs[k] = cfg
-	n.mu.Unlock()
-	return cfg, nil
-}
-
-// markKeygenPending registers a pending keygen for (groupID, keyID). The sign
-// coord handler can call awaitConfig to wait for it.
+// markKeygenPending registers a pending keygen for (groupID, keyID). Sign coord
+// handlers can call awaitKey to wait for it to finish.
 func (n *Node) markKeygenPending(groupID, keyID string) {
 	k := shardKey{groupID, keyID}
 	n.keygenReadyMu.Lock()
@@ -294,8 +273,7 @@ func (n *Node) markKeygenPending(groupID, keyID string) {
 	n.keygenReadyMu.Unlock()
 }
 
-// markKeygenDone signals that keygen for (groupID, keyID) has completed and the
-// config is now available in the cache/store.
+// markKeygenDone signals that the keygen for (groupID, keyID) has finished.
 func (n *Node) markKeygenDone(groupID, keyID string) {
 	k := shardKey{groupID, keyID}
 	n.keygenReadyMu.Lock()
@@ -307,33 +285,27 @@ func (n *Node) markKeygenDone(groupID, keyID string) {
 	n.keygenReadyMu.Unlock()
 }
 
-// awaitConfig loads the config for (groupID, keyID), waiting up to timeout for a
-// concurrent keygen to finish storing it. Returns (nil, nil) only if the key is
-// genuinely absent (no pending keygen and not in store).
-func (n *Node) awaitConfig(groupID, keyID string, timeout time.Duration) (*tss.Config, error) {
-	cfg, err := n.cachedConfig(groupID, keyID)
-	if err != nil || cfg != nil {
-		return cfg, err
+// awaitKey returns the KeyInfo for (groupID, keyID), waiting up to timeout
+// for a concurrent keygen to finish. Returns (nil, nil) if the key is genuinely
+// absent and no keygen is in flight.
+func (n *Node) awaitKey(groupID, keyID string, timeout time.Duration) (*KeyInfo, error) {
+	info, err := n.km.GetKeyInfo(groupID, keyID)
+	if err != nil || info != nil {
+		return info, err
 	}
 
-	// Check if a keygen is in progress.
 	k := shardKey{groupID, keyID}
 	n.keygenReadyMu.Lock()
 	ch, pending := n.keygenReady[k]
 	n.keygenReadyMu.Unlock()
 
 	if !pending {
-		return nil, nil // no keygen in flight — key genuinely missing
+		return nil, nil
 	}
-
-	n.log.Debug("coord: waiting for pending keygen",
-		zap.String("group_id", groupID),
-		zap.String("key_id", keyID))
 
 	select {
 	case <-ch:
-		// Keygen completed — config should now be available.
-		return n.cachedConfig(groupID, keyID)
+		return n.km.GetKeyInfo(groupID, keyID)
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("timeout waiting for keygen to complete for key %s", keyID)
 	case <-n.ctx.Done():
@@ -382,7 +354,7 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 		groupIDs = []string{filterGroup}
 	} else {
 		var err error
-		groupIDs, err = n.store.ListGroups()
+		groupIDs, err = n.km.ListGroups()
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "list groups: "+err.Error())
 			return
@@ -391,30 +363,29 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 
 	entries := make([]keyEntry, 0)
 	for _, gid := range groupIDs {
-		keyIDs, err := n.store.List(gid)
+		keyIDs, err := n.km.ListKeys(gid)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "list keys: "+err.Error())
 			return
 		}
 		for _, kid := range keyIDs {
-			cfg, err := n.cachedConfig(gid, kid)
-			if err != nil || cfg == nil {
+			info, err := n.km.GetKeyInfo(gid, kid)
+			if err != nil || info == nil {
 				continue
 			}
 			ethAddr := ""
-			if addr, err := network.EthereumAddressFromGroupKey(cfg.GroupKey); err == nil {
+			if addr, err := network.EthereumAddressFromGroupKey(info.GroupKey); err == nil {
 				ethAddr = "0x" + hex.EncodeToString(addr[:])
 			}
-			partyIDs := cfg.Parties
-			parties := make([]string, len(partyIDs))
-			for i, p := range partyIDs {
+			parties := make([]string, len(info.Parties))
+			for i, p := range info.Parties {
 				parties[i] = string(p)
 			}
 			entries = append(entries, keyEntry{
 				GroupID:         gid,
 				KeyID:           kid,
 				EthereumAddress: ethAddr,
-				Threshold:       cfg.Threshold,
+				Threshold:       info.Threshold,
 				Parties:         parties,
 			})
 		}
@@ -644,7 +615,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if cfg, _ := n.cachedConfig(req.GroupID, keyID); cfg != nil {
+	if info, _ := n.km.GetKeyInfo(req.GroupID, keyID); info != nil {
 		httpError(w, http.StatusConflict, fmt.Sprintf("key already exists: group=%s key=%s", req.GroupID, keyID))
 		return
 	}
@@ -679,7 +650,15 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := runKeygenOn(r.Context(), n.host, sn, sessID, sortedParties, grp.Threshold)
+	info, err := n.km.RunKeygen(r.Context(), KeygenParams{
+		Host:      n.host,
+		SN:        sn,
+		SessionID: sessID,
+		GroupID:   req.GroupID,
+		KeyID:     keyID,
+		Parties:   sortedParties,
+		Threshold: grp.Threshold,
+	})
 	if err != nil {
 		n.log.Error("keygen failed",
 			zap.String("group_id", req.GroupID),
@@ -689,17 +668,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := n.store.Put(req.GroupID, keyID, cfg); err != nil {
-		n.log.Warn("persist shard failed",
-			zap.String("group_id", req.GroupID),
-			zap.String("key_id", keyID),
-			zap.Error(err))
-	}
-	n.mu.Lock()
-	n.configs[shardKey{req.GroupID, keyID}] = cfg
-	n.mu.Unlock()
-
-	ethAddr, err := network.EthereumAddressFromGroupKey(cfg.GroupKey)
+	ethAddr, err := network.EthereumAddressFromGroupKey(info.GroupKey)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "eth addr: "+err.Error())
 		return
@@ -715,7 +684,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"group_id":         req.GroupID,
 		"key_id":           keyID,
-		"public_key":       "0x" + hex.EncodeToString(cfg.GroupKey),
+		"public_key":       "0x" + hex.EncodeToString(info.GroupKey),
 		"ethereum_address": "0x" + hex.EncodeToString(ethAddr[:]),
 	})
 }
@@ -809,18 +778,18 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := n.cachedConfig(req.GroupID, keyID)
+	keyInfo, err := n.km.GetKeyInfo(req.GroupID, keyID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "load config: "+err.Error())
 		return
 	}
-	if cfg == nil {
+	if keyInfo == nil {
 		httpError(w, http.StatusNotFound, fmt.Sprintf("key not found: group=%s key=%s", req.GroupID, keyID))
 		return
 	}
 
 	sortedSigners := tss.NewPartyIDSlice(grp.Members)
-	if !sortedSigners.Contains(cfg.ID) {
+	if !sortedSigners.Contains(keyInfo.PartyID) {
 		httpError(w, http.StatusBadRequest, "this node is not a member of group "+req.GroupID)
 		return
 	}
@@ -859,7 +828,15 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sig, err := runSignOn(r.Context(), n.host, sn, sessID, cfg, sortedSigners, msgHash)
+	sig, err := n.km.RunSign(r.Context(), SignParams{
+		Host:        n.host,
+		SN:          sn,
+		SessionID:   sessID,
+		GroupID:     req.GroupID,
+		KeyID:       keyID,
+		Signers:     sortedSigners,
+		MessageHash: msgHash,
+	})
 	if err != nil {
 		n.log.Error("sign failed",
 			zap.String("group_id", req.GroupID),

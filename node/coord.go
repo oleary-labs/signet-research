@@ -12,8 +12,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"go.uber.org/zap"
 
-	"signet/tss"
 	"signet/network"
+	"signet/tss"
 )
 
 const coordProtocol = protocol.ID("/signet/coord/1.0.0")
@@ -160,7 +160,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 
 	switch msg.Type {
 	case msgKeygen:
-		if cfg, _ := n.cachedConfig(msg.GroupID, msg.KeyID); cfg != nil {
+		if info, _ := n.km.GetKeyInfo(msg.GroupID, msg.KeyID); info != nil {
 			n.log.Warn("coord: keygen rejected, key already exists",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
@@ -191,28 +191,26 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		go func() {
 			defer sessCancel()
 			defer sn.Close()
+			defer n.markKeygenDone(msg.GroupID, msg.KeyID)
 			n.log.Info("coord: keygen started",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
-			cfg, err := runKeygenOn(sessCtx, n.host, sn, sessID, msg.Parties, msg.Threshold)
+			_, err := n.km.RunKeygen(sessCtx, KeygenParams{
+				Host:      n.host,
+				SN:        sn,
+				SessionID: sessID,
+				GroupID:   msg.GroupID,
+				KeyID:     msg.KeyID,
+				Parties:   msg.Parties,
+				Threshold: msg.Threshold,
+			})
 			if err != nil {
 				n.log.Error("coord: keygen failed",
 					zap.String("group_id", msg.GroupID),
 					zap.String("key_id", msg.KeyID),
 					zap.Error(err))
-				n.markKeygenDone(msg.GroupID, msg.KeyID)
 				return
 			}
-			if err := n.store.Put(msg.GroupID, msg.KeyID, cfg); err != nil {
-				n.log.Warn("coord: persist shard",
-					zap.String("group_id", msg.GroupID),
-					zap.String("key_id", msg.KeyID),
-					zap.Error(err))
-			}
-			n.mu.Lock()
-			n.configs[shardKey{msg.GroupID, msg.KeyID}] = cfg
-			n.mu.Unlock()
-			n.markKeygenDone(msg.GroupID, msg.KeyID)
 			n.log.Info("coord: keygen complete",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
@@ -239,7 +237,8 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
 
-			cfg, err := n.awaitConfig(msg.GroupID, msg.KeyID, 10*time.Second)
+			// Wait for any pending keygen to finish before attempting to sign.
+			info, err := n.awaitKey(msg.GroupID, msg.KeyID, 10*time.Second)
 			if err != nil {
 				n.log.Error("coord: load config",
 					zap.String("group_id", msg.GroupID),
@@ -247,14 +246,22 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 					zap.Error(err))
 				return
 			}
-			if cfg == nil {
+			if info == nil {
 				n.log.Error("coord: key not found",
 					zap.String("group_id", msg.GroupID),
 					zap.String("key_id", msg.KeyID))
 				return
 			}
 
-			_, err = runSignOn(sessCtx, n.host, sn, sessID, cfg, msg.Signers, msg.MessageHash)
+			_, err = n.km.RunSign(sessCtx, SignParams{
+				Host:        n.host,
+				SN:          sn,
+				SessionID:   sessID,
+				GroupID:     msg.GroupID,
+				KeyID:       msg.KeyID,
+				Signers:     msg.Signers,
+				MessageHash: msg.MessageHash,
+			})
 			if err != nil {
 				n.log.Error("coord: sign failed",
 					zap.String("group_id", msg.GroupID),
