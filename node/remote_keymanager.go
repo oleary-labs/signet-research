@@ -5,9 +5,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net"
 	"sync"
 
+	"github.com/fxamacker/cbor/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -44,7 +44,10 @@ func NewRemoteKeyManager(ctx context.Context, socket string) (*RemoteKeyManager,
 // RunKeygen starts a keygen session on the KMS and bridges the libp2p session
 // network with the KMS's ProcessMessage stream.
 func (rkm *RemoteKeyManager) RunKeygen(ctx context.Context, p KeygenParams) (*KeyInfo, error) {
-	params := encodeKeygenParams(p)
+	params, err := encodeKeygenParams(p)
+	if err != nil {
+		return nil, fmt.Errorf("encode keygen params: %w", err)
+	}
 	resp, err := rkm.client.StartSession(ctx, &kmspb.StartSessionRequest{
 		SessionId: p.SessionID,
 		Type:      kmspb.SessionType_SESSION_TYPE_KEYGEN,
@@ -59,27 +62,25 @@ func (rkm *RemoteKeyManager) RunKeygen(ctx context.Context, p KeygenParams) (*Ke
 		p.SN.Send(protoToTSSMessage(out))
 	}
 
-	if err := rkm.bridgeSession(ctx, p.SessionID, p.SN); err != nil {
+	result, err := rkm.bridgeSession(ctx, p.SessionID, p.SN)
+	if err != nil {
 		return nil, fmt.Errorf("keygen session: %w", err)
 	}
-
-	// Retrieve the key info after successful keygen.
-	groupID, _ := hex.DecodeString(p.GroupID)
-	pubResp, err := rkm.client.GetPublicKey(ctx, &kmspb.KeyRef{
-		GroupId: groupID,
-		KeyId:   p.KeyID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("get public key after keygen: %w", err)
+	if result == nil {
+		return nil, fmt.Errorf("keygen session: no result returned")
 	}
+
 	return &KeyInfo{
-		GroupKey: pubResp.GroupKey,
+		GroupKey: result.GroupKey,
 	}, nil
 }
 
 // RunSign starts a signing session on the KMS and bridges messages.
 func (rkm *RemoteKeyManager) RunSign(ctx context.Context, p SignParams) (*tss.Signature, error) {
-	params := encodeSignParams(p)
+	params, err := encodeSignParams(p)
+	if err != nil {
+		return nil, fmt.Errorf("encode sign params: %w", err)
+	}
 	resp, err := rkm.client.StartSession(ctx, &kmspb.StartSessionRequest{
 		SessionId: p.SessionID,
 		Type:      kmspb.SessionType_SESSION_TYPE_SIGN,
@@ -93,14 +94,21 @@ func (rkm *RemoteKeyManager) RunSign(ctx context.Context, p SignParams) (*tss.Si
 		p.SN.Send(protoToTSSMessage(out))
 	}
 
-	if err := rkm.bridgeSession(ctx, p.SessionID, p.SN); err != nil {
+	result, err := rkm.bridgeSession(ctx, p.SessionID, p.SN)
+	if err != nil {
 		return nil, fmt.Errorf("sign session: %w", err)
 	}
+	if result == nil {
+		return nil, fmt.Errorf("sign session: no result returned")
+	}
+	if len(result.SignatureR) != 33 || len(result.SignatureZ) != 32 {
+		return nil, fmt.Errorf("sign session: invalid signature sizes R=%d Z=%d", len(result.SignatureR), len(result.SignatureZ))
+	}
 
-	// TODO(phase2): extract signature from the final ProcessMessage stream
-	// response. For now, the KMS stubs return unimplemented so we won't
-	// reach here in practice.
-	return nil, fmt.Errorf("sign: result extraction not yet implemented")
+	var sig tss.Signature
+	copy(sig.R[:], result.SignatureR)
+	copy(sig.Z[:], result.SignatureZ)
+	return &sig, nil
 }
 
 // GetKeyInfo returns public metadata for a stored key.
@@ -144,24 +152,26 @@ func (rkm *RemoteKeyManager) Close() error {
 
 // bridgeSession opens a ProcessMessage bidi stream and bridges it with the
 // libp2p SessionNetwork: peer messages are forwarded to the KMS, and KMS
-// outgoing messages are sent to peers. The function returns when the KMS
-// closes its send direction (session complete) or the context is cancelled.
+// outgoing messages are sent to peers. Returns the SessionResult from the
+// KMS's final message (nil if no result was sent).
 func (rkm *RemoteKeyManager) bridgeSession(ctx context.Context, sessionID string, sn interface {
 	Send(msg *tss.Message)
 	Incoming() <-chan *tss.Message
-}) error {
+}) (*kmspb.SessionResult, error) {
 	stream, err := rkm.client.ProcessMessage(ctx)
 	if err != nil {
-		return fmt.Errorf("open process_message stream: %w", err)
+		return nil, fmt.Errorf("open process_message stream: %w", err)
 	}
 
-	var bridgeErr error
-	var once sync.Once
+	var (
+		bridgeErr error
+		result    *kmspb.SessionResult
+		once      sync.Once
+		wg        sync.WaitGroup
+	)
 	setErr := func(e error) {
 		once.Do(func() { bridgeErr = e })
 	}
-
-	var wg sync.WaitGroup
 
 	// Goroutine: peer → KMS (read from SessionNetwork, send to KMS stream).
 	wg.Add(1)
@@ -171,7 +181,6 @@ func (rkm *RemoteKeyManager) bridgeSession(ctx context.Context, sessionID string
 			select {
 			case msg, ok := <-sn.Incoming():
 				if !ok {
-					// Session network closed.
 					stream.CloseSend()
 					return
 				}
@@ -203,21 +212,30 @@ func (rkm *RemoteKeyManager) bridgeSession(ctx context.Context, sessionID string
 	for {
 		out, err := stream.Recv()
 		if err == io.EOF {
-			break // KMS closed — session complete.
+			break
 		}
 		if err != nil {
 			setErr(fmt.Errorf("recv from kms: %w", err))
 			break
 		}
-		sn.Send(protoToTSSMessage(out))
+		// Capture session result if present.
+		if out.Result != nil {
+			result = out.Result
+		}
+		// Forward to peers (skip if this is a result-only message with no payload).
+		if len(out.Payload) > 0 || out.From != "" {
+			sn.Send(protoToTSSMessage(out))
+		}
 	}
 
 	wg.Wait()
-	return bridgeErr
+	if bridgeErr != nil {
+		return nil, bridgeErr
+	}
+	return result, nil
 }
 
 // protoToTSSMessage converts a protobuf SessionMessage to a tss.Message.
-// The payload is the opaque FROST round data; From/To are party identifiers.
 func protoToTSSMessage(pm *kmspb.SessionMessage) *tss.Message {
 	return &tss.Message{
 		From:      tss.PartyID(pm.From),
@@ -227,23 +245,54 @@ func protoToTSSMessage(pm *kmspb.SessionMessage) *tss.Message {
 	}
 }
 
-// encodeKeygenParams serializes keygen params. For now this is a simple
-// concatenation; Phase 2 will use CBOR encoding matching the KMS's expected
-// format.
-func encodeKeygenParams(p KeygenParams) []byte {
-	// TODO(phase2): CBOR encode {group_id, key_id, party_id, party_ids, threshold}
-	return nil
+// ---------------------------------------------------------------------------
+// CBOR param encoding
+// ---------------------------------------------------------------------------
+
+// kmsKeygenParams is the CBOR wire format for keygen session params.
+type kmsKeygenParams struct {
+	GroupID  string   `cbor:"group_id"`
+	KeyID    string   `cbor:"key_id"`
+	PartyID  string   `cbor:"party_id"`
+	PartyIDs []string `cbor:"party_ids"`
+	Threshold int     `cbor:"threshold"`
 }
 
-// encodeSignParams serializes sign params.
-func encodeSignParams(p SignParams) []byte {
-	// TODO(phase2): CBOR encode {group_id, key_id, party_id, party_ids, message}
-	return nil
+// kmsSignParams is the CBOR wire format for sign session params.
+type kmsSignParams struct {
+	GroupID     string   `cbor:"group_id"`
+	KeyID       string   `cbor:"key_id"`
+	PartyID     string   `cbor:"party_id"`
+	SignerIDs   []string `cbor:"signer_ids"`
+	MessageHash []byte   `cbor:"message"`
 }
 
-// dialUnix returns a net.Conn dialer for Unix domain sockets, used by gRPC.
-func dialUnix(ctx context.Context, addr string) (net.Conn, error) {
-	return net.Dial("unix", addr)
+func encodeKeygenParams(p KeygenParams) ([]byte, error) {
+	partyIDs := make([]string, len(p.Parties))
+	for i, pid := range p.Parties {
+		partyIDs[i] = string(pid)
+	}
+	return cbor.Marshal(&kmsKeygenParams{
+		GroupID:   p.GroupID,
+		KeyID:     p.KeyID,
+		PartyID:   string(p.Host.Self()),
+		PartyIDs:  partyIDs,
+		Threshold: p.Threshold,
+	})
+}
+
+func encodeSignParams(p SignParams) ([]byte, error) {
+	signerIDs := make([]string, len(p.Signers))
+	for i, pid := range p.Signers {
+		signerIDs[i] = string(pid)
+	}
+	return cbor.Marshal(&kmsSignParams{
+		GroupID:     p.GroupID,
+		KeyID:       p.KeyID,
+		PartyID:     string(p.Host.Self()),
+		SignerIDs:   signerIDs,
+		MessageHash: p.MessageHash,
+	})
 }
 
 // Ensure RemoteKeyManager implements KeyManager at compile time.

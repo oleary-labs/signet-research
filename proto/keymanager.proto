@@ -57,21 +57,21 @@ message StartSessionRequest {
 // type == SESSION_TYPE_KEYGEN.
 //
 // Fields (documented here for reference; actual encoding is CBOR):
-//   group_id       bytes   — 32-byte group identifier
+//   group_id       string  — hex-encoded group identifier
 //   key_id         string  — human-readable key name
-//   party_id       uint16  — this node's FROST identifier (1-based)
-//   party_ids      []uint16— all participant identifiers
+//   party_id       string  — this node's PartyID (libp2p peer ID)
+//   party_ids      []string— all participant PartyIDs (sorted)
 //   threshold      uint16  — minimum signers required (t of n)
 
 // SignParams are CBOR-encoded inside StartSessionRequest.params when
 // type == SESSION_TYPE_SIGN.
 //
 // Fields:
-//   group_id       bytes
+//   group_id       string
 //   key_id         string
-//   party_id       uint16
-//   party_ids      []uint16
-//   message        bytes   — the message hash to sign (32 bytes)
+//   party_id       string
+//   signer_ids     []string — participating signer PartyIDs (sorted)
+//   message        bytes    — the message hash to sign (32 bytes)
 
 // ReshareParams are CBOR-encoded inside StartSessionRequest.params when
 // type == SESSION_TYPE_RESHARE.
@@ -92,10 +92,21 @@ message StartSessionResponse {
 }
 
 message SessionMessage {
-  string session_id = 1;
-  string from       = 2; // sender PartyID
-  string to         = 3; // recipient PartyID; empty = broadcast
-  bytes  payload    = 4; // opaque FROST round message bytes
+  string session_id    = 1;
+  string from          = 2; // sender PartyID
+  string to            = 3; // recipient PartyID; empty = broadcast
+  bytes  payload       = 4; // opaque FROST round message bytes
+  SessionResult result = 5; // set on the final message before stream close
+}
+
+// SessionResult carries the output of a completed session. The KMS populates
+// this on the last SessionMessage it sends before closing the ProcessMessage
+// stream.
+message SessionResult {
+  bytes signature_r     = 1; // 33-byte compressed R (sign sessions)
+  bytes signature_z     = 2; // 32-byte scalar z (sign sessions)
+  bytes group_key       = 3; // 33-byte compressed group pubkey (keygen sessions)
+  bytes verifying_share = 4; // this node's public key share (keygen sessions)
 }
 
 message AbortSessionRequest {

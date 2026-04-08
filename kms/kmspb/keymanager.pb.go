@@ -184,6 +184,7 @@ type SessionMessage struct {
 	From          string                 `protobuf:"bytes,2,opt,name=from,proto3" json:"from,omitempty"`       // sender PartyID
 	To            string                 `protobuf:"bytes,3,opt,name=to,proto3" json:"to,omitempty"`           // recipient PartyID; empty = broadcast
 	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"` // opaque FROST round message bytes
+	Result        *SessionResult         `protobuf:"bytes,5,opt,name=result,proto3" json:"result,omitempty"`   // set on the final message before stream close
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -246,6 +247,84 @@ func (x *SessionMessage) GetPayload() []byte {
 	return nil
 }
 
+func (x *SessionMessage) GetResult() *SessionResult {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+// SessionResult carries the output of a completed session. The KMS populates
+// this on the last SessionMessage it sends before closing the ProcessMessage
+// stream.
+type SessionResult struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	SignatureR     []byte                 `protobuf:"bytes,1,opt,name=signature_r,json=signatureR,proto3" json:"signature_r,omitempty"`             // 33-byte compressed R (sign sessions)
+	SignatureZ     []byte                 `protobuf:"bytes,2,opt,name=signature_z,json=signatureZ,proto3" json:"signature_z,omitempty"`             // 32-byte scalar z (sign sessions)
+	GroupKey       []byte                 `protobuf:"bytes,3,opt,name=group_key,json=groupKey,proto3" json:"group_key,omitempty"`                   // 33-byte compressed group pubkey (keygen sessions)
+	VerifyingShare []byte                 `protobuf:"bytes,4,opt,name=verifying_share,json=verifyingShare,proto3" json:"verifying_share,omitempty"` // this node's public key share (keygen sessions)
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *SessionResult) Reset() {
+	*x = SessionResult{}
+	mi := &file_keymanager_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionResult) ProtoMessage() {}
+
+func (x *SessionResult) ProtoReflect() protoreflect.Message {
+	mi := &file_keymanager_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionResult.ProtoReflect.Descriptor instead.
+func (*SessionResult) Descriptor() ([]byte, []int) {
+	return file_keymanager_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *SessionResult) GetSignatureR() []byte {
+	if x != nil {
+		return x.SignatureR
+	}
+	return nil
+}
+
+func (x *SessionResult) GetSignatureZ() []byte {
+	if x != nil {
+		return x.SignatureZ
+	}
+	return nil
+}
+
+func (x *SessionResult) GetGroupKey() []byte {
+	if x != nil {
+		return x.GroupKey
+	}
+	return nil
+}
+
+func (x *SessionResult) GetVerifyingShare() []byte {
+	if x != nil {
+		return x.VerifyingShare
+	}
+	return nil
+}
+
 type AbortSessionRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -255,7 +334,7 @@ type AbortSessionRequest struct {
 
 func (x *AbortSessionRequest) Reset() {
 	*x = AbortSessionRequest{}
-	mi := &file_keymanager_proto_msgTypes[3]
+	mi := &file_keymanager_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -267,7 +346,7 @@ func (x *AbortSessionRequest) String() string {
 func (*AbortSessionRequest) ProtoMessage() {}
 
 func (x *AbortSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_keymanager_proto_msgTypes[3]
+	mi := &file_keymanager_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -280,7 +359,7 @@ func (x *AbortSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AbortSessionRequest.ProtoReflect.Descriptor instead.
 func (*AbortSessionRequest) Descriptor() ([]byte, []int) {
-	return file_keymanager_proto_rawDescGZIP(), []int{3}
+	return file_keymanager_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *AbortSessionRequest) GetSessionId() string {
@@ -298,7 +377,7 @@ type AbortSessionResponse struct {
 
 func (x *AbortSessionResponse) Reset() {
 	*x = AbortSessionResponse{}
-	mi := &file_keymanager_proto_msgTypes[4]
+	mi := &file_keymanager_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -310,7 +389,7 @@ func (x *AbortSessionResponse) String() string {
 func (*AbortSessionResponse) ProtoMessage() {}
 
 func (x *AbortSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_keymanager_proto_msgTypes[4]
+	mi := &file_keymanager_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -323,7 +402,7 @@ func (x *AbortSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AbortSessionResponse.ProtoReflect.Descriptor instead.
 func (*AbortSessionResponse) Descriptor() ([]byte, []int) {
-	return file_keymanager_proto_rawDescGZIP(), []int{4}
+	return file_keymanager_proto_rawDescGZIP(), []int{5}
 }
 
 type KeyRef struct {
@@ -336,7 +415,7 @@ type KeyRef struct {
 
 func (x *KeyRef) Reset() {
 	*x = KeyRef{}
-	mi := &file_keymanager_proto_msgTypes[5]
+	mi := &file_keymanager_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -348,7 +427,7 @@ func (x *KeyRef) String() string {
 func (*KeyRef) ProtoMessage() {}
 
 func (x *KeyRef) ProtoReflect() protoreflect.Message {
-	mi := &file_keymanager_proto_msgTypes[5]
+	mi := &file_keymanager_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -361,7 +440,7 @@ func (x *KeyRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeyRef.ProtoReflect.Descriptor instead.
 func (*KeyRef) Descriptor() ([]byte, []int) {
-	return file_keymanager_proto_rawDescGZIP(), []int{5}
+	return file_keymanager_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *KeyRef) GetGroupId() []byte {
@@ -387,7 +466,7 @@ type GroupRef struct {
 
 func (x *GroupRef) Reset() {
 	*x = GroupRef{}
-	mi := &file_keymanager_proto_msgTypes[6]
+	mi := &file_keymanager_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -399,7 +478,7 @@ func (x *GroupRef) String() string {
 func (*GroupRef) ProtoMessage() {}
 
 func (x *GroupRef) ProtoReflect() protoreflect.Message {
-	mi := &file_keymanager_proto_msgTypes[6]
+	mi := &file_keymanager_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -412,7 +491,7 @@ func (x *GroupRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GroupRef.ProtoReflect.Descriptor instead.
 func (*GroupRef) Descriptor() ([]byte, []int) {
-	return file_keymanager_proto_rawDescGZIP(), []int{6}
+	return file_keymanager_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GroupRef) GetGroupId() []byte {
@@ -433,7 +512,7 @@ type PublicKeyResponse struct {
 
 func (x *PublicKeyResponse) Reset() {
 	*x = PublicKeyResponse{}
-	mi := &file_keymanager_proto_msgTypes[7]
+	mi := &file_keymanager_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -445,7 +524,7 @@ func (x *PublicKeyResponse) String() string {
 func (*PublicKeyResponse) ProtoMessage() {}
 
 func (x *PublicKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_keymanager_proto_msgTypes[7]
+	mi := &file_keymanager_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -458,7 +537,7 @@ func (x *PublicKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublicKeyResponse.ProtoReflect.Descriptor instead.
 func (*PublicKeyResponse) Descriptor() ([]byte, []int) {
-	return file_keymanager_proto_rawDescGZIP(), []int{7}
+	return file_keymanager_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PublicKeyResponse) GetGroupKey() []byte {
@@ -491,7 +570,7 @@ type KeyListResponse struct {
 
 func (x *KeyListResponse) Reset() {
 	*x = KeyListResponse{}
-	mi := &file_keymanager_proto_msgTypes[8]
+	mi := &file_keymanager_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -503,7 +582,7 @@ func (x *KeyListResponse) String() string {
 func (*KeyListResponse) ProtoMessage() {}
 
 func (x *KeyListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_keymanager_proto_msgTypes[8]
+	mi := &file_keymanager_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -516,7 +595,7 @@ func (x *KeyListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeyListResponse.ProtoReflect.Descriptor instead.
 func (*KeyListResponse) Descriptor() ([]byte, []int) {
-	return file_keymanager_proto_rawDescGZIP(), []int{8}
+	return file_keymanager_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *KeyListResponse) GetKeyIds() []string {
@@ -537,13 +616,21 @@ const file_keymanager_proto_rawDesc = "" +
 	"\x04type\x18\x02 \x01(\x0e2\x1a.signet.kms.v1.SessionTypeR\x04type\x12\x16\n" +
 	"\x06params\x18\x03 \x01(\fR\x06params\"Q\n" +
 	"\x14StartSessionResponse\x129\n" +
-	"\boutgoing\x18\x01 \x03(\v2\x1d.signet.kms.v1.SessionMessageR\boutgoing\"m\n" +
+	"\boutgoing\x18\x01 \x03(\v2\x1d.signet.kms.v1.SessionMessageR\boutgoing\"\xa3\x01\n" +
 	"\x0eSessionMessage\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x12\n" +
 	"\x04from\x18\x02 \x01(\tR\x04from\x12\x0e\n" +
 	"\x02to\x18\x03 \x01(\tR\x02to\x12\x18\n" +
-	"\apayload\x18\x04 \x01(\fR\apayload\"4\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\x124\n" +
+	"\x06result\x18\x05 \x01(\v2\x1c.signet.kms.v1.SessionResultR\x06result\"\x97\x01\n" +
+	"\rSessionResult\x12\x1f\n" +
+	"\vsignature_r\x18\x01 \x01(\fR\n" +
+	"signatureR\x12\x1f\n" +
+	"\vsignature_z\x18\x02 \x01(\fR\n" +
+	"signatureZ\x12\x1b\n" +
+	"\tgroup_key\x18\x03 \x01(\fR\bgroupKey\x12'\n" +
+	"\x0fverifying_share\x18\x04 \x01(\fR\x0everifyingShare\"4\n" +
 	"\x13AbortSessionRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"\x16\n" +
@@ -587,37 +674,39 @@ func file_keymanager_proto_rawDescGZIP() []byte {
 }
 
 var file_keymanager_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_keymanager_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_keymanager_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_keymanager_proto_goTypes = []any{
 	(SessionType)(0),             // 0: signet.kms.v1.SessionType
 	(*StartSessionRequest)(nil),  // 1: signet.kms.v1.StartSessionRequest
 	(*StartSessionResponse)(nil), // 2: signet.kms.v1.StartSessionResponse
 	(*SessionMessage)(nil),       // 3: signet.kms.v1.SessionMessage
-	(*AbortSessionRequest)(nil),  // 4: signet.kms.v1.AbortSessionRequest
-	(*AbortSessionResponse)(nil), // 5: signet.kms.v1.AbortSessionResponse
-	(*KeyRef)(nil),               // 6: signet.kms.v1.KeyRef
-	(*GroupRef)(nil),             // 7: signet.kms.v1.GroupRef
-	(*PublicKeyResponse)(nil),    // 8: signet.kms.v1.PublicKeyResponse
-	(*KeyListResponse)(nil),      // 9: signet.kms.v1.KeyListResponse
+	(*SessionResult)(nil),        // 4: signet.kms.v1.SessionResult
+	(*AbortSessionRequest)(nil),  // 5: signet.kms.v1.AbortSessionRequest
+	(*AbortSessionResponse)(nil), // 6: signet.kms.v1.AbortSessionResponse
+	(*KeyRef)(nil),               // 7: signet.kms.v1.KeyRef
+	(*GroupRef)(nil),             // 8: signet.kms.v1.GroupRef
+	(*PublicKeyResponse)(nil),    // 9: signet.kms.v1.PublicKeyResponse
+	(*KeyListResponse)(nil),      // 10: signet.kms.v1.KeyListResponse
 }
 var file_keymanager_proto_depIdxs = []int32{
-	0, // 0: signet.kms.v1.StartSessionRequest.type:type_name -> signet.kms.v1.SessionType
-	3, // 1: signet.kms.v1.StartSessionResponse.outgoing:type_name -> signet.kms.v1.SessionMessage
-	1, // 2: signet.kms.v1.KeyManager.StartSession:input_type -> signet.kms.v1.StartSessionRequest
-	3, // 3: signet.kms.v1.KeyManager.ProcessMessage:input_type -> signet.kms.v1.SessionMessage
-	4, // 4: signet.kms.v1.KeyManager.AbortSession:input_type -> signet.kms.v1.AbortSessionRequest
-	6, // 5: signet.kms.v1.KeyManager.GetPublicKey:input_type -> signet.kms.v1.KeyRef
-	7, // 6: signet.kms.v1.KeyManager.ListKeys:input_type -> signet.kms.v1.GroupRef
-	2, // 7: signet.kms.v1.KeyManager.StartSession:output_type -> signet.kms.v1.StartSessionResponse
-	3, // 8: signet.kms.v1.KeyManager.ProcessMessage:output_type -> signet.kms.v1.SessionMessage
-	5, // 9: signet.kms.v1.KeyManager.AbortSession:output_type -> signet.kms.v1.AbortSessionResponse
-	8, // 10: signet.kms.v1.KeyManager.GetPublicKey:output_type -> signet.kms.v1.PublicKeyResponse
-	9, // 11: signet.kms.v1.KeyManager.ListKeys:output_type -> signet.kms.v1.KeyListResponse
-	7, // [7:12] is the sub-list for method output_type
-	2, // [2:7] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	0,  // 0: signet.kms.v1.StartSessionRequest.type:type_name -> signet.kms.v1.SessionType
+	3,  // 1: signet.kms.v1.StartSessionResponse.outgoing:type_name -> signet.kms.v1.SessionMessage
+	4,  // 2: signet.kms.v1.SessionMessage.result:type_name -> signet.kms.v1.SessionResult
+	1,  // 3: signet.kms.v1.KeyManager.StartSession:input_type -> signet.kms.v1.StartSessionRequest
+	3,  // 4: signet.kms.v1.KeyManager.ProcessMessage:input_type -> signet.kms.v1.SessionMessage
+	5,  // 5: signet.kms.v1.KeyManager.AbortSession:input_type -> signet.kms.v1.AbortSessionRequest
+	7,  // 6: signet.kms.v1.KeyManager.GetPublicKey:input_type -> signet.kms.v1.KeyRef
+	8,  // 7: signet.kms.v1.KeyManager.ListKeys:input_type -> signet.kms.v1.GroupRef
+	2,  // 8: signet.kms.v1.KeyManager.StartSession:output_type -> signet.kms.v1.StartSessionResponse
+	3,  // 9: signet.kms.v1.KeyManager.ProcessMessage:output_type -> signet.kms.v1.SessionMessage
+	6,  // 10: signet.kms.v1.KeyManager.AbortSession:output_type -> signet.kms.v1.AbortSessionResponse
+	9,  // 11: signet.kms.v1.KeyManager.GetPublicKey:output_type -> signet.kms.v1.PublicKeyResponse
+	10, // 12: signet.kms.v1.KeyManager.ListKeys:output_type -> signet.kms.v1.KeyListResponse
+	8,  // [8:13] is the sub-list for method output_type
+	3,  // [3:8] is the sub-list for method input_type
+	3,  // [3:3] is the sub-list for extension type_name
+	3,  // [3:3] is the sub-list for extension extendee
+	0,  // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_keymanager_proto_init() }
@@ -631,7 +720,7 @@ func file_keymanager_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_keymanager_proto_rawDesc), len(file_keymanager_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   9,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
