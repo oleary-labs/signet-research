@@ -36,6 +36,17 @@ pub struct StepOutput {
     pub result: Option<SessionResult>,
 }
 
+/// Distinguishes errors that may resolve on retry (wrong round) from errors
+/// that will never succeed (unknown sender, completed session, corrupted data
+/// from a permanently invalid source).
+enum ProcessError {
+    /// Message arrived in the wrong round — buffer and retry after the next
+    /// state transition.
+    WrongRound(String),
+    /// Permanently invalid — drop the message.
+    Invalid(String),
+}
+
 /// Maps string PartyIDs to frost Identifiers.
 pub(crate) struct PartyMap {
     to_frost: BTreeMap<String, Identifier>,
@@ -177,24 +188,36 @@ impl Session {
                                     combined.result = Some(r);
                                 }
                             }
-                            Err(e) => {
+                            Err(ProcessError::WrongRound(e)) => {
                                 debug!(from = f.as_str(), error = e.as_str(), "pending message re-buffered");
                                 self.pending.push((f, t, p));
+                            }
+                            Err(ProcessError::Invalid(e)) => {
+                                debug!(from = f.as_str(), error = e.as_str(), "pending message dropped (invalid)");
                             }
                         }
                     }
                 }
                 Ok(combined)
             }
-            Err(e) => {
+            Err(ProcessError::WrongRound(e)) => {
                 debug!(
                     from,
                     state = prev_state,
                     error = e.as_str(),
                     pending = self.pending.len() + 1,
-                    "message buffered"
+                    "message buffered (wrong round)"
                 );
                 self.pending.push((from.to_string(), to.to_string(), payload.to_vec()));
+                Ok(StepOutput { messages: vec![], result: None })
+            }
+            Err(ProcessError::Invalid(e)) => {
+                debug!(
+                    from,
+                    state = prev_state,
+                    error = e.as_str(),
+                    "message dropped (invalid)"
+                );
                 Ok(StepOutput { messages: vec![], result: None })
             }
         }
@@ -369,13 +392,23 @@ impl SessionInner {
         _to: &str,
         payload: &[u8],
         storage: &Storage,
-    ) -> (Self, Result<StepOutput, String>) {
-        // Helper macro: if a fallible expression fails, return (restored_state, Err).
-        macro_rules! try_or_restore {
+    ) -> (Self, Result<StepOutput, ProcessError>) {
+        // Helper macros: if a fallible expression fails, return (restored_state, Err).
+        // try_wrong_round: deserialize failures from known senders — likely wrong round.
+        // try_invalid: protocol/serialization errors after state transition — permanent.
+        macro_rules! try_wrong_round {
             ($expr:expr, $state:expr) => {
                 match $expr {
                     Ok(v) => v,
-                    Err(e) => return ($state, Err(e.to_string())),
+                    Err(e) => return ($state, Err(ProcessError::WrongRound(e.to_string()))),
+                }
+            };
+        }
+        macro_rules! try_invalid {
+            ($expr:expr, $state:expr) => {
+                match $expr {
+                    Ok(v) => v,
+                    Err(e) => return ($state, Err(ProcessError::Invalid(e.to_string()))),
                 }
             };
         }
@@ -398,8 +431,8 @@ impl SessionInner {
                     packages: packages.clone(),
                 };
 
-                let from_id = try_or_restore!(pmap.frost_id(from), restore());
-                let pkg = try_or_restore!(
+                let from_id = try_invalid!(pmap.frost_id(from), restore());
+                let pkg = try_wrong_round!(
                     dkg::round1::Package::deserialize(payload)
                         .map_err(|e| format!("deserialize r1 package from {from}: {e}")),
                     restore()
@@ -428,11 +461,9 @@ impl SessionInner {
                         .filter(|(id, _)| **id != self_id)
                         .map(|(id, pkg)| (*id, pkg.clone()))
                         .collect();
-                    let (r2_secret, r2_packages) = try_or_restore!(
+                    let (r2_secret, r2_packages) = try_invalid!(
                         dkg::part2(secret, &others)
                             .map_err(|e| format!("dkg part2: {e}")),
-                        // secret consumed by part2 on success; on error it's not consumed
-                        // but we can't easily restore — this is a fatal protocol error anyway
                         SessionInner::Completed
                     );
 
@@ -441,11 +472,11 @@ impl SessionInner {
                         if *target_id == self_id {
                             continue;
                         }
-                        let to_party = try_or_restore!(
+                        let to_party = try_invalid!(
                             pmap.party_id(target_id),
                             SessionInner::Completed
                         );
-                        let payload = try_or_restore!(
+                        let payload = try_invalid!(
                             pkg.serialize()
                                 .map_err(|e| format!("serialize r2 package: {e}")),
                             SessionInner::Completed
@@ -495,8 +526,8 @@ impl SessionInner {
                     r2_packages: r2_packages.clone(),
                 };
 
-                let from_id = try_or_restore!(pmap.frost_id(from), restore());
-                let pkg = try_or_restore!(
+                let from_id = try_invalid!(pmap.frost_id(from), restore());
+                let pkg = try_wrong_round!(
                     dkg::round2::Package::deserialize(payload)
                         .map_err(|e| format!("deserialize r2 package from {from}: {e}")),
                     restore()
@@ -522,29 +553,29 @@ impl SessionInner {
                     )
                 } else {
                     // Finalize DKG.
-                    let (key_package, pub_key_package) = try_or_restore!(
+                    let (key_package, pub_key_package) = try_invalid!(
                         dkg::part3(&secret, &r1_packages, &r2_packages)
                             .map_err(|e| format!("dkg part3: {e}")),
                         SessionInner::Completed
                     );
 
-                    let group_key = try_or_restore!(
+                    let group_key = try_invalid!(
                         pub_key_package.verifying_key().serialize()
                             .map_err(|e| format!("serialize group key: {e}")),
                         SessionInner::Completed
                     );
-                    let verifying_share = try_or_restore!(
+                    let verifying_share = try_invalid!(
                         key_package.verifying_share().serialize()
                             .map_err(|e| format!("serialize verifying share: {e}")),
                         SessionInner::Completed
                     );
 
-                    let kp_bytes = try_or_restore!(
+                    let kp_bytes = try_invalid!(
                         key_package.serialize()
                             .map_err(|e| format!("serialize key package: {e}")),
                         SessionInner::Completed
                     );
-                    let pkp_bytes = try_or_restore!(
+                    let pkp_bytes = try_invalid!(
                         pub_key_package.serialize()
                             .map_err(|e| format!("serialize pub key package: {e}")),
                         SessionInner::Completed
@@ -557,7 +588,7 @@ impl SessionInner {
                         verifying_share: verifying_share.clone(),
                         generation: 0,
                     };
-                    try_or_restore!(
+                    try_invalid!(
                         storage.put_key(&params.group_id, &params.key_id, &stored),
                         SessionInner::Completed
                     );
@@ -598,8 +629,8 @@ impl SessionInner {
                     commitments: commitments.clone(),
                 };
 
-                let from_id = try_or_restore!(pmap.frost_id(from), restore());
-                let c = try_or_restore!(
+                let from_id = try_invalid!(pmap.frost_id(from), restore());
+                let c = try_wrong_round!(
                     round1::SigningCommitments::deserialize(payload)
                         .map_err(|e| format!("deserialize commitments from {from}: {e}")),
                     restore()
@@ -628,7 +659,7 @@ impl SessionInner {
                     let signing_package =
                         frost::SigningPackage::new(commitments, &params.message);
 
-                    let sig_share = try_or_restore!(
+                    let sig_share = try_invalid!(
                         round2::sign(&signing_package, &nonces, &key_package)
                             .map_err(|e| format!("round2 sign: {e}")),
                         SessionInner::Completed
@@ -677,8 +708,8 @@ impl SessionInner {
                     shares: shares.clone(),
                 };
 
-                let from_id = try_or_restore!(pmap.frost_id(from), restore());
-                let share = try_or_restore!(
+                let from_id = try_invalid!(pmap.frost_id(from), restore());
+                let share = try_wrong_round!(
                     round2::SignatureShare::deserialize(payload)
                         .map_err(|e| format!("deserialize sig share from {from}: {e}")),
                     restore()
@@ -701,13 +732,13 @@ impl SessionInner {
                     )
                 } else {
                     // Aggregate signatures.
-                    let sig = try_or_restore!(
+                    let sig = try_invalid!(
                         frost::aggregate(&signing_package, &shares, &pub_key_package)
                             .map_err(|e| format!("aggregate: {e}")),
                         SessionInner::Completed
                     );
 
-                    let sig_bytes = try_or_restore!(
+                    let sig_bytes = try_invalid!(
                         sig.serialize()
                             .map_err(|e| format!("serialize signature: {e}")),
                         SessionInner::Completed
@@ -716,10 +747,10 @@ impl SessionInner {
                     if sig_bytes.len() != 65 {
                         return (
                             SessionInner::Completed,
-                            Err(format!(
+                            Err(ProcessError::Invalid(format!(
                                 "unexpected signature length: {} (expected 65)",
                                 sig_bytes.len()
-                            )),
+                            ))),
                         );
                     }
 
@@ -739,7 +770,7 @@ impl SessionInner {
             }
 
             SessionInner::Completed => {
-                (SessionInner::Completed, Err("session already completed".into()))
+                (SessionInner::Completed, Err(ProcessError::Invalid("session already completed".into())))
             }
         }
     }
@@ -1155,7 +1186,7 @@ mod tests {
     // =======================================================================
 
     #[test]
-    fn test_unknown_sender_buffered() {
+    fn test_unknown_sender_dropped() {
         init_tracing();
         let party_ids: Vec<String> = PARTIES.iter().map(|s| s.to_string()).collect();
         let mut owned = make_storages(&PARTIES);
@@ -1175,12 +1206,11 @@ mod tests {
             sessions.insert(pid.clone(), (session, storage));
         }
 
-        // Send a message from an unknown party.
+        // Send a message from an unknown party — permanently invalid, should be dropped.
         let (session, storage) = sessions.get_mut("peer-A").unwrap();
         let result = session.process_message("peer-UNKNOWN", "peer-A", b"garbage", storage);
-        // Should not panic — message gets buffered (unknown sender → frost_id fails → buffered).
         assert!(result.is_ok(), "unknown sender should not cause panic");
-        assert_eq!(session.pending_count(), 1, "unknown sender message should be buffered");
+        assert_eq!(session.pending_count(), 0, "invalid message should be dropped, not buffered");
         assert_eq!(session.state_name(), "KeygenR1", "state should be unchanged");
     }
 
@@ -1189,8 +1219,11 @@ mod tests {
     // =======================================================================
 
     #[test]
-    fn test_corrupted_payload_buffered() {
+    fn test_bad_payload_from_known_sender_buffered() {
         init_tracing();
+        // A deserialization failure from a known sender is treated as a
+        // wrong-round message (we can't distinguish garbage from valid data
+        // for a different round). These get buffered and retried.
         let party_ids: Vec<String> = PARTIES.iter().map(|s| s.to_string()).collect();
         let mut owned = make_storages(&PARTIES);
         let mut sessions: HashMap<String, (Session, Storage)> = HashMap::new();
@@ -1209,11 +1242,10 @@ mod tests {
             sessions.insert(pid.clone(), (session, storage));
         }
 
-        // Send corrupted bytes from a known party.
         let (session, storage) = sessions.get_mut("peer-A").unwrap();
         let result = session.process_message("peer-B", "peer-A", b"not-a-frost-package", storage);
-        assert!(result.is_ok(), "corrupted payload should not cause panic");
-        assert_eq!(session.pending_count(), 1, "corrupted message should be buffered");
+        assert!(result.is_ok(), "bad payload should not cause panic");
+        assert_eq!(session.pending_count(), 1, "wrong-round message should be buffered");
         assert_eq!(session.state_name(), "KeygenR1", "state should be preserved");
     }
 
@@ -1222,7 +1254,7 @@ mod tests {
     // =======================================================================
 
     #[test]
-    fn test_message_after_completion_buffered() {
+    fn test_message_after_completion_dropped() {
         init_tracing();
         let mut owned = make_storages(&PARTIES);
         run_keygen(&mut owned);
@@ -1252,12 +1284,11 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(sessions["peer-A"].0.state_name(), "Completed");
 
-        // Send another message to the completed session.
+        // Send another message to the completed session — should be dropped.
         let (session, storage) = sessions.get_mut("peer-A").unwrap();
         let result = session.process_message("peer-B", "peer-A", b"late-message", storage);
         assert!(result.is_ok(), "message to completed session should not panic");
-        // It gets buffered (will never be drained, but doesn't break anything).
-        assert_eq!(session.pending_count(), 1);
+        assert_eq!(session.pending_count(), 0, "message to completed session should be dropped");
     }
 
     // =======================================================================
