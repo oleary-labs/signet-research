@@ -32,12 +32,13 @@ cmd/devnet-init/   — key-init helper used by devnet scripts
 cmd/harness/       — multi-node test harness (correctness + performance)
 cmd/zkbench/       — ZK proof benchmark tool
 node/              — HTTP API, coordinator, chain client, auth
-signet/tss/        — FROST adapter (keygen/sign round runner)
-signet/lss/        — LSS internal threshold math
+tss/               — FROST adapter (keygen/sign round runner, Go fallback path)
+kms-frost/         — Rust KMS: ZF FROST keygen/signing over gRPC (production default)
+kms/               — gRPC client and generated protobuf (Go side)
 network/           — libp2p host + session network
 contracts/         — Solidity (Foundry): SignetFactory, SignetGroup
 circuits/jwt_auth/ — Noir ZK circuit: JWT → session key binding
-devnet/            — local devnet scripts (Anvil + 3 nodes)
+devnet/            — local devnet scripts (Anvil + 3 nodes + KMS instances)
 docs/              — design and security documents
 ```
 
@@ -45,16 +46,21 @@ docs/              — design and security documents
 
 ## Build
 
-**Requirements:** Go 1.22+
+**Requirements:** Go 1.22+, Rust toolchain (for KMS)
 
 ```bash
 git clone https://github.com/oleary-labs/signet-research
 cd signet-research
 
 go build ./cmd/signetd/
+
+# Build the Rust KMS (production default)
+cd kms-frost && cargo build --release
 ```
 
-The binary is `./signetd`.
+The node binary is `./signetd`. The KMS binary is `kms-frost/target/release/kms-frost`.
+
+To run without the Rust KMS (in-process Go FROST, for development), pass `--no-kms` to the devnet scripts or omit `kms_socket` from the node config.
 
 **Contracts** (requires [Foundry](https://getfoundry.sh)):
 
@@ -87,6 +93,9 @@ node_type:        public                       # "public" or "permissioned"
 eth_rpc:          ""                           # e.g. http://localhost:8545
 factory_address:  ""                           # SignetFactory contract address (0x...)
 
+# KMS (Rust FROST process)
+kms_socket:       ""                           # Unix socket path to kms-frost; empty = in-process Go FROST
+
 # Auth options
 test_mode:        false                        # skip JWT sig/expiry checks; accept raw JWTs at /v1/auth
 vk_path:          ""                           # path to circuit verification key (required for ZK auth)
@@ -115,7 +124,11 @@ Accepted values: `debug`, `info`, `warn`, `error`.
 The devnet scripts start Anvil, deploy the contracts, register three nodes, create a signing group, and launch all three `signetd` processes in one command:
 
 ```bash
+# Default: Rust KMS (recommended)
 devnet/start.sh
+
+# In-process Go FROST (no Rust toolchain required)
+devnet/start.sh --no-kms
 ```
 
 See [devnet/README.md](devnet/README.md) for full details, port assignments, and cleanup commands.
@@ -262,7 +275,7 @@ Response:
 
 ### `POST /v1/keygen`
 
-Runs a distributed key generation session (FROST, 3 rounds).
+Runs a distributed key generation session (FROST DKG).
 
 **Without auth** (groups without issuers):
 
@@ -304,7 +317,7 @@ Response:
 
 ### `POST /v1/sign`
 
-Runs a threshold signing session (FROST, 3 rounds).
+Runs a threshold signing session (FROST, 2 rounds).
 
 **Without auth:**
 
@@ -461,13 +474,17 @@ When a node receives a keygen or sign request it acts as the **initiator**:
 
 All protocol messages travel over direct libp2p streams using a session-scoped protocol ID. Broadcast messages are fanned out as individual unicast sends. A `SessionNetwork` fans inbound messages into a single channel that the round-state machine consumes.
 
-### Protocol
+### Cryptography
 
-FROST (RFC 9591) adapted to secp256k1. Keygen runs 3 rounds; signing runs 3 rounds. After keygen every party holds a distinct secret share; during signing, `threshold + 1` parties collaborate to produce a signature without any party ever reconstructing the full private key.
+FROST (RFC 9591) on secp256k1, implemented via ZcashFoundation/frost (Rust). The production path runs FROST keygen and signing in a dedicated Rust KMS process (`kms-frost`) connected to the Go node over a gRPC Unix domain socket. A Go fallback path (`--no-kms`) using `bytemare/frost` is retained for development.
+
+See [docs/KMS-INTEGRATION.md](docs/KMS-INTEGRATION.md) for the KMS architecture, bug fixes, and performance comparison.
 
 ### Key storage
 
-Key shards are persisted in a bbolt database (`data_dir/keyshards.db`) in nested buckets: `keyshards → <groupID> → <keyID> → JSON`. Shards are loaded on first access and cached in memory.
+**With KMS (default):** Key material (FROST `KeyPackage`, `PublicKeyPackage`) is persisted in sled on the KMS side, never transmitted to the Go node. The node only sees public keys.
+
+**Without KMS (`--no-kms`):** Key shards are persisted in a bbolt database (`data_dir/keyshards.db`) in nested buckets: `keyshards → <groupID> → <keyID> → JSON`.
 
 ### Smart contracts
 

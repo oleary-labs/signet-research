@@ -1,5 +1,15 @@
 # FROST Migration Analysis
 
+> **Historical document — migration complete.** FROST replaced LSS for keygen and signing.
+> The production implementation now uses ZcashFoundation/frost (Rust) in the `kms-frost`
+> KMS process, rather than `bytemare/frost` (Go) as originally planned here. The Go
+> `bytemare/frost` path is retained as a development fallback (`--no-kms`).
+>
+> The resharing analysis and Lagrange-weighting approach described below remain directly
+> relevant — **reshare is a priority roadmap item**. The technique applies identically to
+> ZF FROST key material. See [FROST-RESHARE-APPROACHES.md](FROST-RESHARE-APPROACHES.md)
+> and [DESIGN-RESHARE.md](DESIGN-RESHARE.md) for the current reshare design.
+
 Analysis of FROST (RFC 9591) as a replacement for the current LSS-based threshold signing scheme,
 and the plan to adopt it with a custom resharing layer.
 

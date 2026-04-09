@@ -1,5 +1,9 @@
 # Performance Analysis
 
+> **Note:** These results are from the in-process Go FROST path (`bytemare/frost`).
+> For current Rust KMS performance numbers (1.2-2.5x faster), see
+> [KMS-INTEGRATION.md](KMS-INTEGRATION.md#performance-comparison).
+
 Benchmark results from the test harness running against a local 3-node devnet (2-of-3 threshold, anvil chain, all nodes on localhost).
 
 ## Current Results (v2 — multi-node initiation)

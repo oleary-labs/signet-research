@@ -1,5 +1,12 @@
 # FROST Implementation Comparison: bytemare/frost vs ZcashFoundation/frost
 
+> **Historical document — decision made.** ZcashFoundation/frost (Rust) was selected and
+> is now the production implementation via the `kms-frost` process. `bytemare/frost` (Go)
+> is retained as a development/testing fallback (`--no-kms`). This comparison is kept for
+> context on the decision rationale. The reshare analysis remains relevant — **reshare is
+> a priority roadmap item** and will be implemented in the Rust KMS using the
+> Lagrange-weighting approach described in [FROST-RESHARE-APPROACHES.md](FROST-RESHARE-APPROACHES.md).
+
 Comparison of the two most complete production FROST (RFC 9591) implementations as of April 2026,
 in the context of signet's current stack (`bytemare/frost` + `bytemare/dkg`) and the planned
 reshare implementation.

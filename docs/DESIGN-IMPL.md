@@ -1,3 +1,11 @@
+> **Historical document.** This was the original design spec written before the FROST
+> migration and Rust KMS integration. The core design principles (group model, direct
+> connections, chain-based membership) are still current. Implementation details
+> referencing `bytemare/dkg`, `lss/`, or bbolt-only storage reflect the pre-KMS
+> architecture. See [KMS-INTEGRATION.md](KMS-INTEGRATION.md) for the current production
+> architecture. Reshare remains a priority roadmap item — see
+> [DESIGN-RESHARE.md](DESIGN-RESHARE.md) and [FROST-RESHARE-APPROACHES.md](FROST-RESHARE-APPROACHES.md).
+
 Important characteristics of intended design:
 
 * a single instance of a signet server - also referred to as a node - will be part of one or more groups of nodes.
