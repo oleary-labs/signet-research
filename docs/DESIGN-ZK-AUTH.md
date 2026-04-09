@@ -415,6 +415,109 @@ const sig = await auth.sign(nodeUrl, {
 });
 ```
 
+## Authorization Keys (Planned)
+
+OAuth/OIDC is the right auth mechanism for consumer-facing applications with human
+users. For use cases where OAuth is not natural — agentic payments, machine-to-machine
+signing, programmatic key management — a more general mechanism is needed.
+
+### The impersonation requirement
+
+The core security property of ZK auth is not privacy — it is that **a rogue node
+cannot impersonate a user to the rest of the group.** Nodes verify ZK proofs but
+never see the JWT signature, so they cannot forge a new proof bound to a different
+session key. Any alternative auth mechanism must preserve this property.
+
+### Design: application-managed authorization keys
+
+The application registers one or more **authorization keys** (secp256k1 public keys)
+on the group contract, using the same time-delayed add/remove lifecycle as OAuth
+issuers. The application holds the corresponding private keys and uses them to
+authorize entities — human users, agents, services — by signing session key bindings.
+
+**Auth flow:**
+
+```
+Application                       Entity (user/agent)              Signet Node
+    │                                    │                              │
+    │  ◄── request session access ──     │                              │
+    │                                    │                              │
+    │   sign(auth_key_priv,              │                              │
+    │     identity, session_pub,         │                              │
+    │     group_id, expiry)              │                              │
+    │                                    │                              │
+    │  ── authorization certificate ──►  │                              │
+    │                                    │                              │
+    │                                    │  ── POST /v1/auth ──────►   │
+    │                                    │     { certificate,           │
+    │                                    │       session_pub }          │
+    │                                    │                              │
+    │                                    │     verify cert sig against  │
+    │                                    │     group's registered       │
+    │                                    │     auth keys                │
+    │                                    │                              │
+    │                                    │  ◄── session established ──  │
+    │                                    │                              │
+    │                                    │  (subsequent requests use    │
+    │                                    │   session key, identical     │
+    │                                    │   to OAuth path)             │
+```
+
+**Anti-impersonation property:** Nodes see the authorization certificate (a
+signature) but cannot forge a new one for a different session key because they
+do not hold the application's authorization key. This is the same security
+guarantee as the ZK auth path — nodes can verify but not produce credentials.
+
+### Auth policy types
+
+A group contract supports two auth policy types:
+
+| Policy | Use case | Credential | Node can impersonate? |
+|---|---|---|---|
+| **OAuth issuer** | Consumer apps, human users | ZK proof of JWT binding session_pub | No — can't forge proof without JWT |
+| **Authorization key** | Agents, services, M2M, apps without OAuth | App-signed certificate binding identity + session_pub | No — can't forge sig without auth key |
+
+Both produce session keys. Both are countable for billing (unique identity per
+period). Both are unforgeable by nodes. The request phase (session key signing,
+nonce, timestamp) is identical for both paths.
+
+### Identity derivation
+
+For OAuth, the identity is the JWT `sub` claim. For authorization keys, the
+identity is the `identity` field in the certificate — defined by the application.
+This could be an agent ID, a service account name, an on-chain address, or any
+string the application uses to identify the entity. Key IDs are scoped the same
+way: `identity` or `identity:suffix`.
+
+### Contract changes
+
+The group contract gains authorization key management alongside issuer management:
+
+- `queueAddAuthKey(pubkey)` — queue an authorization key with time delay
+- `executeAddAuthKey(pubkey)` — activate after delay
+- `queueRemoveAuthKey(pubkey)` — queue removal with time delay
+- `executeRemoveAuthKey(pubkey)` — remove after delay
+- `isAuthKeyTrusted(pubkey)` — view
+
+Same time-delayed lifecycle as issuers, same security properties.
+
+### Billing compatibility
+
+From the billing model's perspective, an authorization key session is identical
+to an OAuth session — it produces a unique identity that established a session
+in the billing period. The billing contract counts unique identities regardless
+of which auth policy produced them.
+
+### Status
+
+This is a planned extension. The current OAuth/ZK path is sufficient for the
+initial use cases. Authorization keys will be implemented when agentic or
+machine-to-machine use cases require it. The design is intentionally simple —
+it reuses the session key infrastructure and the same request phase, differing
+only in how the initial session is established.
+
+---
+
 ## References
 
 - [noir-jwt](https://github.com/zkemail/noir-jwt) — Noir JWT verification circuit (zk-email)
