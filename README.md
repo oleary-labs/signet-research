@@ -49,8 +49,8 @@ docs/              — design and security documents
 **Requirements:** Go 1.22+, Rust toolchain (for KMS)
 
 ```bash
-git clone https://github.com/oleary-labs/signet-research
-cd signet-research
+git clone https://github.com/oleary-labs/signet-protocol
+cd signet-protocol
 
 go build ./cmd/signetd/
 
