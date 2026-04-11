@@ -32,6 +32,11 @@ interface ISignetGroup {
         string[] clientIds;
     }
 
+    struct PendingAuthKeyAddition {
+        bytes   pubkey;
+        uint256 executeAfter;
+    }
+
     // -------------------------------------------------------------------------
     // Events — node membership
     // -------------------------------------------------------------------------
@@ -56,6 +61,17 @@ interface ISignetGroup {
     event IssuerRemoved      (bytes32 indexed h, string issuer);
 
     // -------------------------------------------------------------------------
+    // Events — authorization key management
+    // -------------------------------------------------------------------------
+
+    event AuthKeyAddQueued      (bytes32 indexed keyHash, bytes pubkey, uint256 executeAfter);
+    event AuthKeyAddCancelled   (bytes32 indexed keyHash);
+    event AuthKeyAdded          (bytes32 indexed keyHash, bytes pubkey);
+    event AuthKeyRemovalQueued  (bytes32 indexed keyHash, uint256 executeAfter);
+    event AuthKeyRemovalCancelled(bytes32 indexed keyHash);
+    event AuthKeyRemoved        (bytes32 indexed keyHash, bytes pubkey);
+
+    // -------------------------------------------------------------------------
     // Initializer
     // -------------------------------------------------------------------------
 
@@ -68,7 +84,10 @@ interface ISignetGroup {
         address _factory,
         uint256 _issuerAddDelay,
         uint256 _issuerRemovalDelay,
-        InitialIssuer[] calldata _initialIssuers
+        InitialIssuer[] calldata _initialIssuers,
+        uint256 _authKeyAddDelay,
+        uint256 _authKeyRemovalDelay,
+        bytes[] calldata _initialAuthKeys
     ) external;
 
     // -------------------------------------------------------------------------
@@ -119,6 +138,28 @@ interface ISignetGroup {
     function executeRemoveIssuer(bytes32 issuerHash) external;
 
     // -------------------------------------------------------------------------
+    // Authorization key management (manager-only queue/cancel; permissionless execute)
+    // -------------------------------------------------------------------------
+
+    /// @notice Queue an authorization key addition. Key hash = keccak256(pubkey).
+    function queueAddAuthKey(bytes calldata pubkey) external;
+
+    /// @notice Cancel a queued authorization key addition (manager only).
+    function cancelAddAuthKey(bytes32 keyHash) external;
+
+    /// @notice Execute a queued addition after authKeyAddDelay has elapsed (permissionless).
+    function executeAddAuthKey(bytes32 keyHash) external;
+
+    /// @notice Queue an authorization key removal (manager only).
+    function queueRemoveAuthKey(bytes32 keyHash) external;
+
+    /// @notice Cancel a queued authorization key removal (manager only).
+    function cancelRemoveAuthKey(bytes32 keyHash) external;
+
+    /// @notice Execute a queued removal after authKeyRemovalDelay has elapsed (permissionless).
+    function executeRemoveAuthKey(bytes32 keyHash) external;
+
+    // -------------------------------------------------------------------------
     // Views — membership
     // -------------------------------------------------------------------------
 
@@ -150,4 +191,17 @@ interface ISignetGroup {
 
     /// @notice True when clientId is in the trusted list for the given issuer.
     function isClientIdTrusted(bytes32 issuerHash, string calldata clientId) external view returns (bool);
+
+    // -------------------------------------------------------------------------
+    // Views — authorization keys
+    // -------------------------------------------------------------------------
+
+    function authKeyAddDelay() external view returns (uint256);
+    function authKeyRemovalDelay() external view returns (uint256);
+
+    /// @notice Returns all currently trusted authorization key pubkeys for this group.
+    function getAuthKeys() external view returns (bytes[] memory);
+
+    /// @notice True when the given key hash corresponds to a trusted authorization key.
+    function isAuthKeyTrusted(bytes32 keyHash) external view returns (bool);
 }

@@ -46,10 +46,24 @@ contract SignetGroup is Initializable, ISignetGroup {
     mapping(bytes32 => uint256) internal _pendingRemovals;   // executeAfter timestamp
 
     // -------------------------------------------------------------------------
-    // Upgrade-safe storage gap  (50 original − 7 new vars = 43)
+    // State — authorization keys
     // -------------------------------------------------------------------------
 
-    uint256[43] private __gap;
+    uint256 public authKeyAddDelay;
+    uint256 public authKeyRemovalDelay;
+
+    mapping(bytes32 => bytes) internal _authKeys;            // keyHash → pubkey
+    bytes32[] internal _authKeyHashes;
+    mapping(bytes32 => uint256) internal _authKeyHashIndex;  // 1-based
+
+    mapping(bytes32 => PendingAuthKeyAddition) internal _pendingAuthKeyAdditions;
+    mapping(bytes32 => uint256) internal _pendingAuthKeyRemovals; // executeAfter timestamp
+
+    // -------------------------------------------------------------------------
+    // Upgrade-safe storage gap  (50 original − 14 new vars = 36)
+    // -------------------------------------------------------------------------
+
+    uint256[36] private __gap;
 
     // -------------------------------------------------------------------------
     // Initializer
@@ -64,7 +78,10 @@ contract SignetGroup is Initializable, ISignetGroup {
         address _factory,
         uint256 _issuerAddDelay,
         uint256 _issuerRemovalDelay,
-        InitialIssuer[] calldata _initialIssuers
+        InitialIssuer[] calldata _initialIssuers,
+        uint256 _authKeyAddDelay,
+        uint256 _authKeyRemovalDelay,
+        bytes[] calldata _initialAuthKeys
     ) external initializer {
         manager = _manager;
         threshold = _threshold;
@@ -72,6 +89,8 @@ contract SignetGroup is Initializable, ISignetGroup {
         factory = _factory;
         issuerAddDelay = _issuerAddDelay;
         issuerRemovalDelay = _issuerRemovalDelay;
+        authKeyAddDelay = _authKeyAddDelay;
+        authKeyRemovalDelay = _authKeyRemovalDelay;
 
         for (uint256 i = 0; i < nodeAddrs.length; i++) {
             address node = nodeAddrs[i];
@@ -98,6 +117,12 @@ contract SignetGroup is Initializable, ISignetGroup {
                 cids[j] = ini.clientIds[j];
             }
             _addIssuer(h, ini.issuer, cids);
+        }
+
+        // Seed initial authorization keys immediately — no delay applied.
+        for (uint256 i = 0; i < _initialAuthKeys.length; i++) {
+            bytes32 h = keccak256(_initialAuthKeys[i]);
+            _addAuthKey(h, _initialAuthKeys[i]);
         }
     }
 
@@ -276,6 +301,89 @@ contract SignetGroup is Initializable, ISignetGroup {
     }
 
     // -------------------------------------------------------------------------
+    // Authorization key management
+    // -------------------------------------------------------------------------
+
+    /// @inheritdoc ISignetGroup
+    function queueAddAuthKey(bytes calldata pubkey) external {
+        require(msg.sender == manager, "not manager");
+        bytes32 h = keccak256(pubkey);
+        require(_authKeyHashIndex[h] == 0, "auth key already exists");
+        require(_pendingAuthKeyAdditions[h].executeAfter == 0, "addition already queued");
+
+        uint256 executeAfter = block.timestamp + authKeyAddDelay;
+
+        PendingAuthKeyAddition storage p = _pendingAuthKeyAdditions[h];
+        p.pubkey = pubkey;
+        p.executeAfter = executeAfter;
+
+        emit AuthKeyAddQueued(h, pubkey, executeAfter);
+    }
+
+    /// @inheritdoc ISignetGroup
+    function cancelAddAuthKey(bytes32 keyHash) external {
+        require(msg.sender == manager, "not manager");
+        require(_pendingAuthKeyAdditions[keyHash].executeAfter != 0, "not pending");
+        delete _pendingAuthKeyAdditions[keyHash];
+        emit AuthKeyAddCancelled(keyHash);
+    }
+
+    /// @inheritdoc ISignetGroup
+    function executeAddAuthKey(bytes32 keyHash) external {
+        PendingAuthKeyAddition storage p = _pendingAuthKeyAdditions[keyHash];
+        require(p.executeAfter != 0, "not pending");
+        require(block.timestamp >= p.executeAfter, "delay not elapsed");
+        require(_authKeyHashIndex[keyHash] == 0, "auth key already exists");
+
+        bytes memory pubkey = p.pubkey;
+        delete _pendingAuthKeyAdditions[keyHash];
+        _addAuthKey(keyHash, pubkey);
+    }
+
+    /// @inheritdoc ISignetGroup
+    function queueRemoveAuthKey(bytes32 keyHash) external {
+        require(msg.sender == manager, "not manager");
+        require(_authKeyHashIndex[keyHash] != 0, "auth key not found");
+        require(_pendingAuthKeyRemovals[keyHash] == 0, "removal already queued");
+
+        uint256 executeAfter = block.timestamp + authKeyRemovalDelay;
+        _pendingAuthKeyRemovals[keyHash] = executeAfter;
+        emit AuthKeyRemovalQueued(keyHash, executeAfter);
+    }
+
+    /// @inheritdoc ISignetGroup
+    function cancelRemoveAuthKey(bytes32 keyHash) external {
+        require(msg.sender == manager, "not manager");
+        require(_pendingAuthKeyRemovals[keyHash] != 0, "no queued removal");
+        delete _pendingAuthKeyRemovals[keyHash];
+        emit AuthKeyRemovalCancelled(keyHash);
+    }
+
+    /// @inheritdoc ISignetGroup
+    function executeRemoveAuthKey(bytes32 keyHash) external {
+        uint256 executeAfter = _pendingAuthKeyRemovals[keyHash];
+        require(executeAfter != 0, "no queued removal");
+        require(block.timestamp >= executeAfter, "delay not elapsed");
+
+        bytes memory pubkey = _authKeys[keyHash];
+        delete _pendingAuthKeyRemovals[keyHash];
+
+        // Swap-and-pop removal from _authKeyHashes
+        uint256 idx = _authKeyHashIndex[keyHash] - 1; // 0-based
+        uint256 last = _authKeyHashes.length - 1;
+        if (idx != last) {
+            bytes32 tail = _authKeyHashes[last];
+            _authKeyHashes[idx] = tail;
+            _authKeyHashIndex[tail] = idx + 1; // 1-based
+        }
+        _authKeyHashes.pop();
+        delete _authKeyHashIndex[keyHash];
+        delete _authKeys[keyHash];
+
+        emit AuthKeyRemoved(keyHash, pubkey);
+    }
+
+    // -------------------------------------------------------------------------
     // Views — membership
     // -------------------------------------------------------------------------
 
@@ -348,6 +456,25 @@ contract SignetGroup is Initializable, ISignetGroup {
     }
 
     // -------------------------------------------------------------------------
+    // Views — authorization keys
+    // -------------------------------------------------------------------------
+
+    /// @inheritdoc ISignetGroup
+    function getAuthKeys() external view returns (bytes[] memory) {
+        uint256 len = _authKeyHashes.length;
+        bytes[] memory result = new bytes[](len);
+        for (uint256 i = 0; i < len; i++) {
+            result[i] = _authKeys[_authKeyHashes[i]];
+        }
+        return result;
+    }
+
+    /// @inheritdoc ISignetGroup
+    function isAuthKeyTrusted(bytes32 keyHash) external view returns (bool) {
+        return _authKeyHashIndex[keyHash] != 0;
+    }
+
+    // -------------------------------------------------------------------------
     // Internal helpers — membership
     // -------------------------------------------------------------------------
 
@@ -404,5 +531,16 @@ contract SignetGroup is Initializable, ISignetGroup {
             stored.clientIds.push(clientIds[i]);
         }
         emit IssuerAdded(h, issuer, clientIds);
+    }
+
+    // -------------------------------------------------------------------------
+    // Internal helpers — authorization keys
+    // -------------------------------------------------------------------------
+
+    function _addAuthKey(bytes32 h, bytes memory pubkey) internal {
+        _authKeyHashes.push(h);
+        _authKeyHashIndex[h] = _authKeyHashes.length; // 1-based
+        _authKeys[h] = pubkey;
+        emit AuthKeyAdded(h, pubkey);
     }
 }

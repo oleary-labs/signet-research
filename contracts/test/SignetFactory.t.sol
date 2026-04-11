@@ -146,6 +146,7 @@ contract SignetFactoryTest is PubkeyHelpers {
     }
 
     ISignetGroup.InitialIssuer[] internal _noIssuers;
+    bytes[] internal _noAuthKeys;
 
     function testCreateGroup_AllOpen() public {
         _registerAll();
@@ -154,7 +155,7 @@ contract SignetFactoryTest is PubkeyHelpers {
 
         vm.expectEmit(false, true, false, true);
         emit ISignetFactory.GroupCreated(address(0), address(this), 1);
-        address group = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers);
+        address group = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
 
         assertTrue(factory.isGroup(group));
         assertEq(factory.getGroups().length, 1);
@@ -179,7 +180,7 @@ contract SignetFactoryTest is PubkeyHelpers {
         address[] memory addrs = new address[](3);
         addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
 
-        address group = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers);
+        address group = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
         ISignetGroup g = ISignetGroup(group);
 
         assertEq(g.getActiveNodes().length, 2);   // node1 + node3
@@ -197,7 +198,7 @@ contract SignetFactoryTest is PubkeyHelpers {
         addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
 
         vm.expectRevert("removal delay too short");
-        factory.createGroup(addrs, 1, 1 days - 1, 1 days, 1 days, _noIssuers);
+        factory.createGroup(addrs, 1, 1 days - 1, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
     }
 
     function testCreateGroup_ThresholdTooHigh() public {
@@ -207,7 +208,7 @@ contract SignetFactoryTest is PubkeyHelpers {
 
         // threshold=3, length=3 → need length > threshold → should revert
         vm.expectRevert("threshold too high for node count");
-        factory.createGroup(addrs, 3, 1 days, 1 days, 1 days, _noIssuers);
+        factory.createGroup(addrs, 3, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
     }
 
     function testCreateGroup_UnregisteredNode() public {
@@ -218,7 +219,7 @@ contract SignetFactoryTest is PubkeyHelpers {
         addrs[0] = node1; addrs[1] = node2;
 
         vm.expectRevert("node not registered");
-        factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers);
+        factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
     }
 
     // -------------------------------------------------------------------------
@@ -229,7 +230,7 @@ contract SignetFactoryTest is PubkeyHelpers {
         _registerAll();
         address[] memory addrs = new address[](3);
         addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
-        address group = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers);
+        address group = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
 
         // Deploy a new implementation (re-use SignetGroup for simplicity)
         SignetGroup newImpl = new SignetGroup();
@@ -278,7 +279,7 @@ contract SignetFactoryTest is PubkeyHelpers {
         address[] memory addrs = new address[](3);
         addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
 
-        address group = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers);
+        address group = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
 
         address[] memory g1 = factory.getNodeGroups(node1);
         assertEq(g1.length, 1);
@@ -298,7 +299,7 @@ contract SignetFactoryTest is PubkeyHelpers {
         _registerAll();
         address[] memory addrs = new address[](3);
         addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
-        address group = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers);
+        address group = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
 
         assertEq(factory.getNodeGroups(node1).length, 1);
 
@@ -325,8 +326,8 @@ contract SignetFactoryTest is PubkeyHelpers {
         address[] memory addrs = new address[](3);
         addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
 
-        address group1 = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers);
-        address group2 = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers);
+        address group1 = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
+        address group2 = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
 
         address[] memory groups1 = factory.getNodeGroups(node1);
         assertEq(groups1.length, 2);
