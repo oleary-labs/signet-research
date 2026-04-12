@@ -403,9 +403,14 @@ func (c *ChainClient) pollGroupEvents(ctx context.Context, grpAddr common.Addres
 						zap.String("event", eventType))
 				}
 			} else {
-				// Group is ACTIVE: create reshare job.
+				// Group is ACTIVE: create reshare job and auto-start coordinator.
 				if err := c.n.createReshareJob(hexGrp, eventType, oldMembers, newMembers, threshold); err != nil {
 					c.log.Warn("chain: create reshare job",
+						zap.String("group", hexGrp), zap.Error(err))
+				} else if err := c.n.startCoordinator(hexGrp, 1); err != nil {
+					// Non-fatal: another node may coordinate, or on-demand
+					// reshare will handle it when a sign request arrives.
+					c.log.Debug("chain: auto-start coordinator",
 						zap.String("group", hexGrp), zap.Error(err))
 				}
 			}

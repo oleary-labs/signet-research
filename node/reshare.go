@@ -396,6 +396,15 @@ func (n *Node) completeReshareJob(groupID string) {
 // createReshareJob creates a new ReshareJob when a membership event is detected
 // and the group is currently ACTIVE.
 func (n *Node) createReshareJob(groupID string, eventType string, oldMembers, newMembers []tss.PartyID, threshold int) error {
+	// Reject same-committee reshare. Proactive key refresh (same committee,
+	// same threshold) is a valid future capability but is disabled until
+	// operator key auth is implemented to gate administrative operations.
+	if sameParties(oldMembers, newMembers) {
+		n.log.Debug("reshare: skipping same-committee reshare (disabled)",
+			zap.String("group_id", groupID))
+		return nil
+	}
+
 	// Snapshot all current keys.
 	keys, err := n.km.ListKeys(groupID)
 	if err != nil {
@@ -546,5 +555,23 @@ func applyMembershipEvent(members []tss.PartyID, event DeferredMembershipEvent) 
 		copy(out, members)
 		return out
 	}
+}
+
+// sameParties returns true if a and b contain the same set of party IDs
+// (order-independent).
+func sameParties(a, b []tss.PartyID) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[tss.PartyID]struct{}, len(a))
+	for _, p := range a {
+		set[p] = struct{}{}
+	}
+	for _, p := range b {
+		if _, ok := set[p]; !ok {
+			return false
+		}
+	}
+	return true
 }
 

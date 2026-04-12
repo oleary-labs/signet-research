@@ -252,7 +252,10 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 	mux.HandleFunc("POST /v1/auth", n.handleAuth)
 	mux.HandleFunc("POST /v1/keygen", n.handleKeygen)
 	mux.HandleFunc("POST /v1/sign", n.handleSign)
-	mux.HandleFunc("POST /v1/reshare", n.handleStartReshare)
+	// POST /v1/reshare is disabled until operator key auth is implemented.
+	// Reshare is auto-triggered by chain membership events. The status
+	// endpoint remains available for observability.
+	// mux.HandleFunc("POST /v1/reshare", n.handleStartReshare)
 	mux.HandleFunc("GET /v1/reshare/{group_id}", n.handleReshareStatus)
 	n.server = &http.Server{Addr: cfg.APIAddr, Handler: mux}
 

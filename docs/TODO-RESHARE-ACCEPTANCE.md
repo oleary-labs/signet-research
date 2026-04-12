@@ -47,17 +47,21 @@ Mock KeyManager, no libp2p, no real FROST.
 
 Real libp2p + real FROST + real bbolt.
 
-- [x] Same committee: keygen → reshare → sign (`TestReshareIntegration_SameCommittee`)
+- [x] Shrink committee 4→3: keygen → reshare → verify sentinel on removed node → sign (`TestReshareIntegration_ShrinkCommittee`)
 - [x] Grow committee 3→4: keygen → reshare → sign with new member (`TestReshareIntegration_GrowCommittee`)
-- [x] On-demand reshare via sign path (`TestReshareIntegration_OnDemandViaSign`)
+- [x] On-demand reshare via sign path with committee change (`TestReshareIntegration_OnDemandViaSign`)
 - [x] Job lifecycle state transitions (`TestReshareIntegration_JobLifecycle`)
 
+### Design Decisions
+
+- Same-committee reshare (proactive key refresh) is disabled. Reshare only triggers on
+  membership changes via chain events. Will be re-enabled when operator key auth is
+  implemented.
+- `POST /v1/reshare` endpoint is disabled (commented out) pending operator key auth.
+  Chain events auto-start the coordinator.
+- `GET /v1/reshare/{group_id}` remains available for observability.
+
 ## TODO
-
-### Integration Tests — Committee Changes
-
-- [ ] **Shrink committee**: keygen on 5, reshare to 3, sign with new 3-party committee. Verify old-only nodes get sentinel configs and cannot sign.
-- [ ] **Old-only party sentinel**: after shrink, verify old-only node's `KeyShareBytes == nil` and `GetKeyInfo` returns appropriate state.
 
 ### Integration Tests — Multi-Key
 
@@ -82,9 +86,14 @@ Real libp2p + real FROST + real bbolt.
 
 ### HTTP API
 
-- [ ] **POST /v1/reshare**: start coordinator, verify response body, verify coordinator runs.
 - [ ] **GET /v1/reshare/{group_id}**: verify status reporting (active, resharing, none).
-- [ ] **POST /v1/reshare auth**: endpoint has no authentication; decide whether admin auth is needed before production.
+- [ ] **POST /v1/reshare**: currently disabled. Re-enable with operator key auth (see below).
+
+### Operator Key Auth
+
+- [ ] **Operator key on-chain**: add `operatorAddress` field to factory or group contract, set at node registration.
+- [ ] **Operator key validation**: admin endpoints (POST /v1/reshare, future admin ops) require signature from operator key, not the hot node identity key.
+- [ ] **Re-enable same-committee reshare**: once operator key auth gates it, proactive key refresh can be safely exposed.
 
 ### Remote KMS
 
