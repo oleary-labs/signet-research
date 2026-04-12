@@ -1,0 +1,13 @@
+data_dir: {{ signetd_data_dir }}
+listen_addr: /ip4/0.0.0.0/tcp/{{ p2p_port }}
+api_addr: :{{ api_port }}
+announce_addr: /ip4/{{ ansible_host }}/tcp/{{ p2p_port }}
+bootstrap_peers:
+{% for host in groups['signet_nodes'] %}
+{% if host != inventory_hostname %}
+  - /ip4/{{ hostvars[host].ansible_host }}/tcp/{{ p2p_port }}/p2p/{{ hostvars[host].peer_id }}
+{% endif %}
+{% endfor %}
+node_type: {{ node_type }}
+eth_rpc: {{ eth_rpc }}
+factory_address: {{ factory_address }}

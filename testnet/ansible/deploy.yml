@@ -1,0 +1,33 @@
+---
+# deploy.yml — Deploy signetd to all testnet nodes.
+#
+# Prerequisites:
+#   1. Instances provisioned and IPs in inventory.yml
+#   2. Node identities generated (run testnet/scripts/init-nodes.sh first)
+#   3. Contracts deployed to Sepolia (run testnet/scripts/deploy-contracts.sh first)
+#   4. host_vars populated with peer_id, eth_address, eth_privkey
+#   5. Binary cross-compiled: GOOS=linux GOARCH=amd64 go build -o build/signetd-linux-amd64 ./cmd/signetd
+#
+# Usage:
+#   cd testnet/ansible
+#   ansible-playbook deploy.yml
+
+- name: Deploy signetd to testnet nodes
+  hosts: signet_nodes
+  become: true
+
+  pre_tasks:
+    - name: Validate required variables
+      assert:
+        that:
+          - ansible_host is defined and ansible_host != ''
+          - peer_id is defined and peer_id != ''
+          - eth_rpc is defined and eth_rpc != ''
+          - factory_address is defined and factory_address != ''
+        fail_msg: >
+          Missing required variables. Ensure inventory.yml has IPs,
+          host_vars have peer_id, and SEPOLIA_RPC_URL + FACTORY_ADDRESS
+          are set in the environment.
+
+  roles:
+    - signetd

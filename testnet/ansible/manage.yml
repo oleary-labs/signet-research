@@ -1,0 +1,84 @@
+---
+# manage.yml — Common management tasks for testnet nodes.
+#
+# Usage:
+#   ansible-playbook manage.yml -e action=stop
+#   ansible-playbook manage.yml -e action=start
+#   ansible-playbook manage.yml -e action=restart
+#   ansible-playbook manage.yml -e action=status
+#   ansible-playbook manage.yml -e action=logs
+#   ansible-playbook manage.yml -e action=clean
+
+- name: "Manage signetd ({{ action | default('status') }})"
+  hosts: signet_nodes
+  become: true
+
+  tasks:
+    # ---- Stop ----
+    - name: Stop signetd
+      systemd:
+        name: signetd
+        state: stopped
+      when: action == "stop"
+
+    # ---- Start ----
+    - name: Start signetd
+      systemd:
+        name: signetd
+        state: started
+      when: action == "start"
+
+    # ---- Restart ----
+    - name: Restart signetd
+      systemd:
+        name: signetd
+        state: restarted
+      when: action == "restart"
+
+    # ---- Status ----
+    - name: Check signetd status
+      command: systemctl status signetd --no-pager
+      register: status_out
+      changed_when: false
+      failed_when: false
+      when: action | default("status") == "status"
+
+    - name: Show status
+      debug:
+        msg: "{{ status_out.stdout_lines }}"
+      when: action | default("status") == "status" and status_out is defined
+
+    # ---- Logs ----
+    - name: Fetch recent logs
+      command: journalctl -u signetd --no-pager -n {{ log_lines | default(50) }}
+      register: log_out
+      changed_when: false
+      when: action == "logs"
+
+    - name: Show logs
+      debug:
+        msg: "{{ log_out.stdout_lines }}"
+      when: action == "logs" and log_out is defined
+
+    # ---- Clean ----
+    - name: Stop signetd before clean
+      systemd:
+        name: signetd
+        state: stopped
+      when: action == "clean"
+      failed_when: false
+
+    - name: Remove data directory
+      file:
+        path: "{{ signetd_data_dir }}"
+        state: absent
+      when: action == "clean"
+
+    - name: Recreate data directory
+      file:
+        path: "{{ signetd_data_dir }}"
+        state: directory
+        owner: "{{ signetd_user }}"
+        group: "{{ signetd_user }}"
+        mode: "0755"
+      when: action == "clean"

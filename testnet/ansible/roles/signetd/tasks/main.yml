@@ -1,0 +1,72 @@
+---
+# roles/signetd/tasks/main.yml — Deploy and configure signetd on a remote host.
+
+- name: Create signet system user
+  become: true
+  user:
+    name: "{{ signetd_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+
+- name: Create directories
+  become: true
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ signetd_user }}"
+    group: "{{ signetd_user }}"
+    mode: "0755"
+  loop:
+    - "{{ signetd_config_dir }}"
+    - "{{ signetd_data_dir }}"
+    - "{{ signetd_log_dir }}"
+
+- name: Upload signetd binary
+  become: true
+  copy:
+    src: "{{ local_binary_path | default('../../../../build/signetd-linux-amd64') }}"
+    dest: "{{ signetd_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: restart signetd
+
+- name: Upload node identity key
+  become: true
+  copy:
+    src: "{{ local_node_key_path }}"
+    dest: "{{ signetd_data_dir }}/node.key"
+    owner: "{{ signetd_user }}"
+    group: "{{ signetd_user }}"
+    mode: "0600"
+  when: local_node_key_path is defined
+  notify: restart signetd
+
+- name: Write node config
+  become: true
+  template:
+    src: config.yaml.j2
+    dest: "{{ signetd_config_dir }}/config.yaml"
+    owner: "{{ signetd_user }}"
+    group: "{{ signetd_user }}"
+    mode: "0644"
+  notify: restart signetd
+
+- name: Install systemd unit
+  become: true
+  template:
+    src: signetd.service.j2
+    dest: /etc/systemd/system/signetd.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart signetd
+
+- name: Enable and start signetd
+  become: true
+  systemd:
+    name: signetd
+    enabled: true
+    state: started
+    daemon_reload: true

@@ -151,12 +151,12 @@ for i in 1 2 3; do
         --value 0.1ether \
         >/dev/null
 
-    # registerNode(bytes pubkey, bool isOpen) — must come from the node's own address.
+    # registerNode(bytes pubkey, bool isOpen, address operator) — must come from the node's own address.
     cast send \
         --private-key "$PK" \
         --rpc-url "$RPC" \
         "$FACTORY" \
-        "registerNode(bytes,bool)" "$PUB" true \
+        "registerNode(bytes,bool,address)" "$PUB" true "0x0000000000000000000000000000000000000000" \
         >/dev/null
 
     echo "    node${i} registered: ${ADDR}"
@@ -174,8 +174,8 @@ CREATE_RECEIPT=$(cast send \
     --private-key "$DEPLOYER_PK" \
     --rpc-url "$RPC" \
     "$FACTORY" \
-    "createGroup(address[],uint256,uint256,uint256,uint256,(string,string[])[])" \
-    "[$ADDR_1,$ADDR_2,$ADDR_3]" 2 86400 86400 86400 "[]" \
+    "createGroup(address[],uint256,uint256,uint256,uint256,(string,string[])[],uint256,uint256,bytes[])" \
+    "[$ADDR_1,$ADDR_2,$ADDR_3]" 2 86400 86400 86400 "[]" 86400 86400 "[]" \
     --json)
 
 # topics[1] is the group address zero-padded to 32 bytes; take the last 40 hex chars.

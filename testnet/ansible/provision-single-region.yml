@@ -1,0 +1,92 @@
+---
+# provision-single-region.yml — Launch 5 EC2 instances in us-east-1 across
+# different AZs for single-region performance comparison.
+#
+# Usage:
+#   ansible-playbook provision-single-region.yml -e ssh_key_name=signet-testnet
+
+- name: Provision Signet single-region testnet (us-east-1, multi-AZ)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    ssh_key_name: signet-testnet
+    instance_type: t3.medium
+    region: us-east-1
+    ami: ami-009d9173b44d0482b  # Ubuntu 24.04 LTS x86_64 (Canonical)
+    security_group_name: signet-testnet-sg
+    nodes:
+      - { name: node1-local, az: us-east-1a }
+      - { name: node2-local, az: us-east-1b }
+      - { name: node3-local, az: us-east-1c }
+      - { name: node4-local, az: us-east-1d }
+      - { name: node5-local, az: us-east-1f }
+
+  tasks:
+    - name: Ensure EC2 instance per node
+      amazon.aws.ec2_instance:
+        name: "signet-{{ item.name }}"
+        region: "{{ region }}"
+        availability_zone: "{{ item.az }}"
+        instance_type: "{{ instance_type }}"
+        image_id: "{{ ami }}"
+        key_name: "{{ ssh_key_name }}"
+        security_group: "{{ security_group_name }}"
+        network:
+          assign_public_ip: true
+        volumes:
+          - device_name: /dev/sda1
+            ebs:
+              volume_size: 20
+              volume_type: gp3
+        exact_count: 1
+        state: running
+        wait: true
+        tags:
+          Project: signet-testnet
+          Node: "{{ item.name }}"
+        filters:
+          "tag:Project": signet-testnet
+          "tag:Node": "{{ item.name }}"
+      loop: "{{ nodes }}"
+      loop_control:
+        label: "{{ item.name }} ({{ item.az }})"
+      register: ec2_results
+
+    - name: Build instance IP map
+      set_fact:
+        instance_ips: >-
+          {{ instance_ips | default({}) | combine({
+               item.item.name: (item.instances[0].public_ip_address
+                                | default(item.instances[0].network_interfaces[0].association.public_ip
+                                | default('UNKNOWN')))
+             }) }}
+      loop: "{{ ec2_results.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Display instance IPs
+      debug:
+        msg: "{{ item.key }}: {{ item.value }}"
+      loop: "{{ instance_ips | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Write instance IPs to file
+      copy:
+        content: |
+          {% for node in nodes %}
+          {{ node.name | replace('-local', '') }}={{ instance_ips[node.name] }}
+          {% endfor %}
+        dest: "{{ playbook_dir }}/../.hosts-local"
+
+    - name: Wait for SSH on all instances
+      wait_for:
+        host: "{{ item.value }}"
+        port: 22
+        timeout: 120
+        state: started
+      loop: "{{ instance_ips | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"

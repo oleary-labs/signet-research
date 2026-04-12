@@ -1,0 +1,44 @@
+---
+# teardown.yml — Terminate all testnet EC2 instances.
+#
+# Usage:
+#   ansible-playbook teardown.yml
+#
+# This terminates instances by their "signet-testnet" project tag.
+# Security groups are left in place (harmless and avoids dependency issues).
+
+- name: Terminate Signet testnet EC2 instances
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    regions:
+      - us-east-1
+      - us-east-2
+      - us-west-1
+      - us-west-2
+      - ca-central-1
+
+  tasks:
+    - name: Find and terminate instances per region
+      amazon.aws.ec2_instance:
+        region: "{{ item }}"
+        state: absent
+        filters:
+          "tag:Project": signet-testnet
+          instance-state-name:
+            - running
+            - stopped
+      loop: "{{ regions }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Remove .hosts file
+      file:
+        path: "{{ playbook_dir }}/../.hosts"
+        state: absent
+
+    - name: Done
+      debug:
+        msg: "All testnet instances terminated. Contracts on Sepolia are permanent (no cleanup needed)."

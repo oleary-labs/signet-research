@@ -1,0 +1,7 @@
+---
+# Group variables for all signet nodes.
+# Per-node variables (peer_id, eth_address, etc.) are set in host_vars/
+# after running devnet-init and the deploy script.
+
+node_type: public
+log_level: info
