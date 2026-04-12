@@ -22,6 +22,12 @@ type KeyShardStore struct {
 	db *bbolt.DB
 }
 
+// DB returns the underlying bbolt.DB so other stores (e.g. ReshareStore)
+// can share the same database file.
+func (s *KeyShardStore) DB() *bbolt.DB {
+	return s.db
+}
+
 // openKeyShardStore opens (or creates) the keyshards.db file under dataDir.
 // dataDir must already exist.
 func openKeyShardStore(dataDir string) (*KeyShardStore, error) {

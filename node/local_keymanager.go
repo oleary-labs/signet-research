@@ -89,6 +89,48 @@ func (lkm *LocalKeyManager) RunSign(ctx context.Context, p SignParams) (*tss.Sig
 	return sig, nil
 }
 
+// RunReshare executes the FROST reshare protocol for a single key.
+// Old parties provide their existing config; new-only parties have no config
+// for this key. The result is persisted: new parties get a fresh config,
+// old-only parties get a sentinel (KeyShareBytes = nil, Generation+1).
+func (lkm *LocalKeyManager) RunReshare(ctx context.Context, p ReshareParams) (*ReshareResult, error) {
+	// Load existing config (nil for new-only parties).
+	cfg, err := lkm.loadConfig(p.GroupID, p.KeyID)
+	if err != nil {
+		return nil, err
+	}
+
+	round := tss.Reshare(cfg, p.Host.Self(), p.OldParties, p.NewParties, p.NewThreshold)
+
+	result, err := tss.Run(ctx, round, p.SN)
+	if err != nil {
+		return nil, fmt.Errorf("protocol: %w", err)
+	}
+
+	newCfg, ok := result.(*tss.Config)
+	if !ok {
+		return nil, fmt.Errorf("unexpected result type %T", result)
+	}
+
+	// Persist the new config (sentinel or full).
+	if err := lkm.store.Put(p.GroupID, p.KeyID, newCfg); err != nil {
+		lkm.log.Warn("persist reshared shard failed",
+			zap.String("group_id", p.GroupID),
+			zap.String("key_id", p.KeyID),
+			zap.Error(err))
+	}
+
+	k := shardKey{p.GroupID, p.KeyID}
+	lkm.mu.Lock()
+	lkm.configs[k] = newCfg
+	lkm.mu.Unlock()
+
+	return &ReshareResult{
+		OldOnly:    newCfg.KeyShareBytes == nil,
+		Generation: newCfg.Generation,
+	}, nil
+}
+
 // GetKeyInfo returns public metadata for a stored key, or (nil, nil) if not found.
 func (lkm *LocalKeyManager) GetKeyInfo(groupID, keyID string) (*KeyInfo, error) {
 	cfg, err := lkm.loadConfig(groupID, keyID)

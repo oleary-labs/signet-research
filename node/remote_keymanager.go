@@ -116,6 +116,13 @@ func (rkm *RemoteKeyManager) RunSign(ctx context.Context, p SignParams) (*tss.Si
 	return &sig, nil
 }
 
+// RunReshare is not yet implemented in the Rust KMS. The protobuf schema
+// defines SESSION_TYPE_RESHARE = 3, but the KMS returns Unimplemented.
+// This stub will be replaced when the Rust KMS gains reshare support.
+func (rkm *RemoteKeyManager) RunReshare(ctx context.Context, p ReshareParams) (*ReshareResult, error) {
+	return nil, fmt.Errorf("reshare not implemented in remote KMS")
+}
+
 // GetKeyInfo returns public metadata for a stored key.
 // Returns (nil, nil) if the key does not exist (matching KeyManager contract).
 func (rkm *RemoteKeyManager) GetKeyInfo(groupID, keyID string) (*KeyInfo, error) {

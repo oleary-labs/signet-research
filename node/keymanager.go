@@ -19,6 +19,12 @@ type KeyManager interface {
 	// generated key identified by (GroupID, KeyID) in the params.
 	RunSign(ctx context.Context, p SignParams) (*tss.Signature, error)
 
+	// RunReshare executes the key reshare protocol, redistributing shares
+	// of an existing key to a new committee. The result indicates whether
+	// this node is in the new committee (has a new key share) or is
+	// old-only (sentinel config, no key material).
+	RunReshare(ctx context.Context, p ReshareParams) (*ReshareResult, error)
+
 	// GetKeyInfo returns public metadata for a stored key shard, or
 	// (nil, nil) if the key does not exist.
 	GetKeyInfo(groupID, keyID string) (*KeyInfo, error)
@@ -53,6 +59,30 @@ type SignParams struct {
 	KeyID       string
 	Signers     []tss.PartyID
 	MessageHash []byte
+}
+
+// ReshareParams holds the inputs for a key reshare session.
+type ReshareParams struct {
+	Host         *network.Host
+	SN           *network.SessionNetwork
+	SessionID    string
+	GroupID      string
+	KeyID        string
+	OldParties   []tss.PartyID
+	NewParties   []tss.PartyID
+	OldThreshold int
+	NewThreshold int
+}
+
+// ReshareResult holds the outcome of a reshare session for a single key.
+type ReshareResult struct {
+	// OldOnly is true when this node was in the old committee but not the
+	// new one. The key share has been invalidated; the node can no longer
+	// sign with this key.
+	OldOnly bool
+
+	// Generation is the new generation counter (oldGeneration + 1).
+	Generation uint64
 }
 
 // KeyInfo holds public metadata about a stored key shard. It does not contain

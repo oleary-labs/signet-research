@@ -21,8 +21,9 @@ const coordProtocol = protocol.ID("/signet/coord/1.0.0")
 type coordMsgType uint8
 
 const (
-	msgKeygen coordMsgType = 1
-	msgSign   coordMsgType = 2
+	msgKeygen  coordMsgType = 1
+	msgSign    coordMsgType = 2
+	msgReshare coordMsgType = 3
 )
 
 // coordMsg is sent from the initiating node to each other participant to start
@@ -50,6 +51,12 @@ type coordMsg struct {
 	// Auth: structured auth proof with ZK proof or auth key certificate,
 	// plus session key binding.
 	Auth *AuthProof `cbor:"10,keyasint,omitempty"`
+
+	// Reshare only: old and new committee definitions.
+	OldParties   []tss.PartyID `cbor:"11,keyasint,omitempty"`
+	NewParties   []tss.PartyID `cbor:"12,keyasint,omitempty"`
+	NewThreshold int           `cbor:"13,keyasint,omitempty"`
+	ReshareNonce string        `cbor:"14,keyasint,omitempty"`
 }
 
 // keygenSessionID returns the deterministic internal session string for a keygen.
@@ -61,6 +68,13 @@ func keygenSessionID(groupID, keyID string) string {
 // a random nonce to allow concurrent signs on the same key.
 func signSessionID(groupID, keyID, nonce string) string {
 	return groupID + ":" + keyID + ":" + nonce
+}
+
+// reshareSessionID returns the internal session string for a reshare.
+// The nonce distinguishes concurrent reshare attempts on the same key
+// (e.g. coordinator vs on-demand).
+func reshareSessionID(groupID, keyID, nonce string) string {
+	return groupID + ":reshare:" + keyID + ":" + nonce
 }
 
 // registerCoordHandler registers the /signet/coord/1.0.0 stream handler on the
@@ -252,6 +266,101 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 			n.log.Info("coord: sign complete",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
+		}()
+
+	case msgReshare:
+		// Reshare is administrative — no auth validation required.
+		// Validate that this node knows about the reshare job.
+		if n.reshareStore == nil {
+			n.log.Warn("coord: reshare rejected, reshare store not initialized")
+			s.Write([]byte{0})
+			return
+		}
+
+		job, err := n.reshareStore.GetJob(msg.GroupID)
+		if err != nil || job == nil {
+			n.log.Warn("coord: reshare rejected, no reshare job for group",
+				zap.String("group_id", msg.GroupID),
+				zap.String("key_id", msg.KeyID))
+			s.Write([]byte{0})
+			return
+		}
+
+		// Check if this key is already done for this job.
+		done, _ := n.reshareStore.IsKeyDone(msg.GroupID, msg.KeyID)
+		if done {
+			// Key already reshared — ACK but no-op (handles coordinator/on-demand race).
+			s.Write([]byte{1})
+			return
+		}
+
+		// Check/register per-key reshare channel. If another session is
+		// already running for this key, NACK to avoid duplicates.
+		if !n.tryRegisterReshareKey(msg.GroupID, msg.KeyID) {
+			n.log.Debug("coord: reshare NACK, session already running",
+				zap.String("group_id", msg.GroupID),
+				zap.String("key_id", msg.KeyID))
+			s.Write([]byte{0})
+			return
+		}
+
+		allParties := msg.Parties // old ∪ new
+		sessID := reshareSessionID(msg.GroupID, msg.KeyID, msg.ReshareNonce)
+		sessCtx, sessCancel := context.WithTimeout(n.ctx, 30*time.Second)
+		sn, err := network.NewSessionNetwork(sessCtx, n.host, sessID, allParties)
+		if err != nil {
+			sessCancel()
+			n.completeReshareKey(msg.GroupID, msg.KeyID, false)
+			n.log.Error("coord: reshare session network",
+				zap.String("group_id", msg.GroupID),
+				zap.String("key_id", msg.KeyID),
+				zap.Error(err))
+			return
+		}
+
+		s.Write([]byte{1})
+
+		go func() {
+			defer sessCancel()
+			defer sn.Close()
+
+			n.log.Info("coord: reshare started",
+				zap.String("group_id", msg.GroupID),
+				zap.String("key_id", msg.KeyID))
+
+			result, err := n.km.RunReshare(sessCtx, ReshareParams{
+				Host:         n.host,
+				SN:           sn,
+				SessionID:    sessID,
+				GroupID:      msg.GroupID,
+				KeyID:        msg.KeyID,
+				OldParties:   msg.OldParties,
+				NewParties:   msg.NewParties,
+				OldThreshold: msg.Threshold,
+				NewThreshold: msg.NewThreshold,
+			})
+			if err != nil {
+				n.completeReshareKey(msg.GroupID, msg.KeyID, false)
+				n.log.Error("coord: reshare failed",
+					zap.String("group_id", msg.GroupID),
+					zap.String("key_id", msg.KeyID),
+					zap.Error(err))
+				return
+			}
+
+			// Record completion.
+			n.reshareStore.PutKeyDone(msg.GroupID, msg.KeyID, &ReshareKeyRecord{
+				CompletedAt: time.Now(),
+				ByNode:      string(n.host.Self()),
+				OldOnly:     result.OldOnly,
+			})
+			n.completeReshareKey(msg.GroupID, msg.KeyID, true)
+
+			n.log.Info("coord: reshare complete",
+				zap.String("group_id", msg.GroupID),
+				zap.String("key_id", msg.KeyID),
+				zap.Bool("old_only", result.OldOnly),
+				zap.Uint64("generation", result.Generation))
 		}()
 
 	default:

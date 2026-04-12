@@ -59,6 +59,16 @@ type Node struct {
 	chain    *ChainClient  // nil if no eth_rpc configured
 
 	bootstrapPeers []peer.AddrInfo // parsed bootstrap peer addresses for reconnect
+
+	// Reshare state: per-group job tracking, per-key session channels,
+	// coordinator flags. See reshare.go for methods.
+	reshareStore   *ReshareStore
+	reshareJobsMu  sync.RWMutex
+	reshareJobs    map[string]*ReshareJob    // groupID → active job (nil = ACTIVE)
+	reshareKeysMu  sync.Mutex
+	reshareKeys    map[reshareKeyID]chan struct{} // per-key done channels
+	reshareCoordMu sync.Mutex
+	reshareCoord   map[string]bool               // groupID → is coordinator
 }
 
 // NodeInfo is returned by the /v1/info endpoint.
@@ -169,6 +179,37 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		log.Info("loaded circuit verification key", zap.String("path", cfg.VKPath), zap.Int("bytes", len(circuitVK)))
 	}
 
+	// Open reshare store. For LocalKeyManager, share the same bbolt DB.
+	// For RemoteKeyManager, open a dedicated DB for job tracking (the node
+	// tracks reshare orchestration state locally regardless of KManager backend).
+	var reshareStore *ReshareStore
+	if lkm, ok := km.(*LocalKeyManager); ok {
+		reshareStore, err = NewReshareStore(lkm.store.DB())
+		if err != nil {
+			km.Close()
+			h.Close()
+			cancel()
+			return nil, fmt.Errorf("reshare store: %w", err)
+		}
+	} else {
+		// Remote KMS: open a dedicated bbolt for reshare job tracking.
+		reshareDB, dbErr := openReshareDB(cfg.DataDir)
+		if dbErr != nil {
+			km.Close()
+			h.Close()
+			cancel()
+			return nil, fmt.Errorf("reshare store: %w", dbErr)
+		}
+		reshareStore, err = NewReshareStore(reshareDB)
+		if err != nil {
+			reshareDB.Close()
+			km.Close()
+			h.Close()
+			cancel()
+			return nil, fmt.Errorf("reshare store: %w", err)
+		}
+	}
+
 	n := &Node{
 		cfg:            cfg,
 		host:           h,
@@ -182,6 +223,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		sessions:       newSessionStore(),
 		bootstrapPeers: bootstrapPeers,
 	}
+	n.initReshareState(reshareStore)
 	n.sessions.startCleanupLoop(ctx)
 	go n.reconnectLoop(ctx)
 
@@ -210,6 +252,8 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 	mux.HandleFunc("POST /v1/auth", n.handleAuth)
 	mux.HandleFunc("POST /v1/keygen", n.handleKeygen)
 	mux.HandleFunc("POST /v1/sign", n.handleSign)
+	mux.HandleFunc("POST /v1/reshare", n.handleStartReshare)
+	mux.HandleFunc("GET /v1/reshare/{group_id}", n.handleReshareStatus)
 	n.server = &http.Server{Addr: cfg.APIAddr, Handler: mux}
 
 	return n, nil
@@ -761,6 +805,18 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block if the key is stale (pending reshare). Waits until the reshare
+	// completes or triggers an on-demand reshare if no session is running.
+	if n.isKeyStale(req.GroupID, keyID) {
+		n.log.Info("sign: key is stale, waiting for reshare",
+			zap.String("group_id", req.GroupID),
+			zap.String("key_id", keyID))
+		if err := n.waitForReshare(r.Context(), req.GroupID, keyID); err != nil {
+			httpError(w, http.StatusServiceUnavailable, "key reshare pending: "+err.Error())
+			return
+		}
+	}
+
 	keyInfo, err := n.km.GetKeyInfo(req.GroupID, keyID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "load config: "+err.Error())
@@ -943,6 +999,102 @@ func (n *Node) validateSessionRequest(
 		Identity:      info.Identity,
 	}
 	return ap, resolvedKeyID, nil
+}
+
+// handleStartReshare handles POST /v1/reshare. Starts the background
+// coordinator for a group that has a pending reshare job.
+func (n *Node) handleStartReshare(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		GroupID     string `json:"group_id"`
+		Concurrency int    `json:"concurrency"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	groupID := strings.ToLower(req.GroupID)
+	if groupID == "" {
+		httpError(w, http.StatusBadRequest, "group_id is required")
+		return
+	}
+	concurrency := req.Concurrency
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	n.reshareJobsMu.RLock()
+	job := n.reshareJobs[groupID]
+	n.reshareJobsMu.RUnlock()
+	if job == nil {
+		httpError(w, http.StatusNotFound, "no reshare job pending for this group")
+		return
+	}
+
+	if err := n.startCoordinator(groupID, concurrency); err != nil {
+		if strings.Contains(err.Error(), "already coordinating") {
+			httpError(w, http.StatusConflict, err.Error())
+		} else {
+			httpError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	done, _ := n.reshareStore.CountKeysDone(groupID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"group_id":    groupID,
+		"keys_total":  len(job.KeysTotal),
+		"keys_done":   done,
+		"concurrency": concurrency,
+		"status":      "started",
+	})
+}
+
+// handleReshareStatus handles GET /v1/reshare/{group_id}. Returns current
+// reshare status for a group.
+func (n *Node) handleReshareStatus(w http.ResponseWriter, r *http.Request) {
+	groupID := strings.ToLower(r.PathValue("group_id"))
+	if groupID == "" {
+		httpError(w, http.StatusBadRequest, "group_id is required")
+		return
+	}
+
+	n.reshareJobsMu.RLock()
+	job := n.reshareJobs[groupID]
+	n.reshareJobsMu.RUnlock()
+
+	if job == nil {
+		// Check if we know about this group at all.
+		n.groupsMu.RLock()
+		_, known := n.groups[groupID]
+		n.groupsMu.RUnlock()
+		status := "none"
+		if known {
+			status = "active"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"group_id": groupID,
+			"status":   status,
+		})
+		return
+	}
+
+	done, _ := n.reshareStore.CountKeysDone(groupID)
+	n.reshareCoordMu.Lock()
+	isCoord := n.reshareCoord[groupID]
+	n.reshareCoordMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"group_id":       groupID,
+		"status":         "resharing",
+		"keys_total":     len(job.KeysTotal),
+		"keys_done":      done,
+		"keys_stale":     len(job.KeysTotal) - done,
+		"started_at":     job.StartedAt.Format(time.RFC3339),
+		"is_coordinator": isCoord,
+	})
 }
 
 func httpError(w http.ResponseWriter, code int, msg string) {

@@ -358,19 +358,57 @@ func (c *ChainClient) pollGroupEvents(ctx context.Context, grpAddr common.Addres
 					zap.String("addr", nodeAddr.Hex()), zap.Error(err))
 				continue
 			}
+
+			// Capture old membership before updating.
 			c.n.groupsMu.Lock()
 			grp, ok := c.n.groups[hexGrp]
-			if ok {
-				switch lg.Topics[0] {
-				case joinedID:
-					if !containsParty(grp.Members, pid) {
-						grp.Members = append(grp.Members, pid)
-					}
-				case removedID:
-					grp.Members = removeParty(grp.Members, pid)
+			if !ok {
+				c.n.groupsMu.Unlock()
+				continue
+			}
+			oldMembers := make([]tss.PartyID, len(grp.Members))
+			copy(oldMembers, grp.Members)
+			threshold := grp.Threshold
+
+			// Apply membership change.
+			switch lg.Topics[0] {
+			case joinedID:
+				if !containsParty(grp.Members, pid) {
+					grp.Members = append(grp.Members, pid)
+				}
+			case removedID:
+				grp.Members = removeParty(grp.Members, pid)
+			}
+			newMembers := make([]tss.PartyID, len(grp.Members))
+			copy(newMembers, grp.Members)
+			c.n.groupsMu.Unlock()
+
+			// Trigger reshare job creation or deferral.
+			eventType := "node_added"
+			if lg.Topics[0] == removedID {
+				eventType = "node_removed"
+			}
+			c.n.reshareJobsMu.RLock()
+			existingJob := c.n.reshareJobs[hexGrp]
+			c.n.reshareJobsMu.RUnlock()
+
+			if existingJob != nil {
+				// Already resharing: defer this event.
+				if err := c.n.deferMembershipEvent(hexGrp, eventType, nodeAddr.Hex(), pid); err != nil {
+					c.log.Warn("chain: defer membership event",
+						zap.String("group", hexGrp), zap.Error(err))
+				} else {
+					c.log.Info("chain: membership event deferred (reshare in progress)",
+						zap.String("group", hexGrp),
+						zap.String("event", eventType))
+				}
+			} else {
+				// Group is ACTIVE: create reshare job.
+				if err := c.n.createReshareJob(hexGrp, eventType, oldMembers, newMembers, threshold); err != nil {
+					c.log.Warn("chain: create reshare job",
+						zap.String("group", hexGrp), zap.Error(err))
 				}
 			}
-			c.n.groupsMu.Unlock()
 
 		case issuerAddedID:
 			if len(lg.Topics) < 2 {

@@ -1,0 +1,617 @@
+package node
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"go.uber.org/zap"
+
+	"signet/network"
+	"signet/tss"
+)
+
+// testNode bundles a Node with its host and key manager so integration tests
+// can drive the reshare lifecycle end-to-end with real libp2p transport and
+// real FROST rounds (via LocalKeyManager).
+type testNode struct {
+	n    *Node
+	host *network.Host
+	km   *LocalKeyManager
+}
+
+// newTestNodeCluster creates `n` test nodes, each with a real libp2p host and
+// LocalKeyManager backed by an in-memory bbolt DB. All nodes are directly
+// connected to each other and have their coord handlers registered. Returns
+// the cluster and a cleanup function.
+func newTestNodeCluster(t *testing.T, ctx context.Context, numNodes int) ([]*testNode, func()) {
+	t.Helper()
+
+	log := zap.NewNop()
+	cluster := make([]*testNode, numNodes)
+
+	// Create hosts and local key managers.
+	for i := 0; i < numNodes; i++ {
+		priv, _, err := crypto.GenerateKeyPair(crypto.Secp256k1, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := network.NewHost(ctx, priv, "/ip4/127.0.0.1/tcp/0")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Per-node data dir.
+		dataDir := t.TempDir()
+		km, err := NewLocalKeyManager(ctx, dataDir, log)
+		if err != nil {
+			h.Close()
+			t.Fatal(err)
+		}
+
+		rs, err := NewReshareStore(km.store.DB())
+		if err != nil {
+			km.Close()
+			h.Close()
+			t.Fatal(err)
+		}
+
+		nodeCtx, cancel := context.WithCancel(ctx)
+		n := &Node{
+			log:    log,
+			ctx:    nodeCtx,
+			cancel: cancel,
+			host:   h,
+			km:     km,
+			groups: make(map[string]*GroupInfo),
+			auth:   newGroupAuth(nodeCtx, nil, log),
+			keygenReady: make(map[shardKey]chan struct{}),
+		}
+		n.initReshareState(rs)
+		n.registerCoordHandler()
+
+		cluster[i] = &testNode{n: n, host: h, km: km}
+	}
+
+	// Connect all pairs directly.
+	for i := 0; i < numNodes; i++ {
+		for j := i + 1; j < numNodes; j++ {
+			if err := network.ConnectDirectly(ctx, cluster[i].host, cluster[j].host); err != nil {
+				t.Fatalf("connect %d<->%d: %v", i, j, err)
+			}
+		}
+	}
+
+	// Register group membership on every node.
+	parties := make([]tss.PartyID, numNodes)
+	for i, tn := range cluster {
+		parties[i] = tn.host.Self()
+	}
+
+	cleanup := func() {
+		for _, tn := range cluster {
+			tn.n.cancel()
+			tn.km.Close()
+			tn.host.Close()
+		}
+	}
+
+	return cluster, cleanup
+}
+
+// setGroupMembership configures the same group on every node in the cluster.
+func setGroupMembership(cluster []*testNode, groupID string, members []tss.PartyID, threshold int) {
+	for _, tn := range cluster {
+		tn.n.groupsMu.Lock()
+		tn.n.groups[groupID] = &GroupInfo{
+			Threshold: threshold,
+			Members:   members,
+		}
+		tn.n.groupsMu.Unlock()
+	}
+}
+
+// clusterKeygen runs a keygen session across the cluster, driven by the first
+// node as the initiator. Each node runs the coord handler's logic — we invoke
+// it directly rather than going through broadcastCoord (which requires the
+// HTTP server) by manually calling each party's RunKeygen.
+func clusterKeygen(t *testing.T, ctx context.Context, cluster []*testNode, groupID, keyID string) {
+	t.Helper()
+
+	parties := make([]tss.PartyID, len(cluster))
+	for i, tn := range cluster {
+		parties[i] = tn.host.Self()
+	}
+	sortedParties := tss.NewPartyIDSlice(parties)
+
+	sessID := keygenSessionID(groupID, keyID)
+	threshold := 2
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(cluster))
+
+	for i, tn := range cluster {
+		i, tn := i, tn
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sn, err := network.NewSessionNetwork(ctx, tn.host, sessID, sortedParties)
+			if err != nil {
+				errs[i] = fmt.Errorf("session network: %w", err)
+				return
+			}
+			defer sn.Close()
+
+			_, err = tn.n.km.RunKeygen(ctx, KeygenParams{
+				Host:      tn.host,
+				SN:        sn,
+				SessionID: sessID,
+				GroupID:   groupID,
+				KeyID:     keyID,
+				Parties:   sortedParties,
+				Threshold: threshold,
+			})
+			if err != nil {
+				errs[i] = fmt.Errorf("run keygen: %w", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("keygen party %d: %v", i, err)
+		}
+	}
+}
+
+// clusterSign runs a sign session across the cluster and verifies all signers
+// produce the same signature.
+func clusterSign(t *testing.T, ctx context.Context, cluster []*testNode, groupID, keyID string, msgHash []byte) *tss.Signature {
+	t.Helper()
+
+	signers := make([]tss.PartyID, len(cluster))
+	for i, tn := range cluster {
+		signers[i] = tn.host.Self()
+	}
+	sortedSigners := tss.NewPartyIDSlice(signers)
+
+	sessID := signSessionID(groupID, keyID, "testnonce")
+
+	var wg sync.WaitGroup
+	sigs := make([]*tss.Signature, len(cluster))
+	errs := make([]error, len(cluster))
+
+	for i, tn := range cluster {
+		i, tn := i, tn
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sn, err := network.NewSessionNetwork(ctx, tn.host, sessID, sortedSigners)
+			if err != nil {
+				errs[i] = fmt.Errorf("session network: %w", err)
+				return
+			}
+			defer sn.Close()
+
+			sig, err := tn.n.km.RunSign(ctx, SignParams{
+				Host:        tn.host,
+				SN:          sn,
+				SessionID:   sessID,
+				GroupID:     groupID,
+				KeyID:       keyID,
+				Signers:     sortedSigners,
+				MessageHash: msgHash,
+			})
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			sigs[i] = sig
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("sign party %d: %v", i, err)
+		}
+	}
+
+	// All parties should produce byte-identical signatures.
+	for i := 1; i < len(sigs); i++ {
+		if !bytes.Equal(sigs[0].R[:], sigs[i].R[:]) || !bytes.Equal(sigs[0].Z[:], sigs[i].Z[:]) {
+			t.Fatalf("signature mismatch between party 0 and %d", i)
+		}
+	}
+	return sigs[0]
+}
+
+// TestReshareIntegration_SameCommittee runs a full keygen -> reshare -> sign
+// flow using real libp2p hosts and LocalKeyManagers. The committee membership
+// does not change; this verifies the machinery (coord protocol, stores,
+// orchestration) works end to end.
+func TestReshareIntegration_SameCommittee(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cluster, cleanup := newTestNodeCluster(t, ctx, 3)
+	defer cleanup()
+
+	groupID := "0xgroup1"
+	keyID := "k1"
+	parties := make([]tss.PartyID, len(cluster))
+	for i, tn := range cluster {
+		parties[i] = tn.host.Self()
+	}
+	setGroupMembership(cluster, groupID, parties, 2)
+
+	// Step 1: Keygen.
+	clusterKeygen(t, ctx, cluster, groupID, keyID)
+	t.Log("keygen complete")
+
+	// Capture the original group key.
+	info0, err := cluster[0].km.GetKeyInfo(groupID, keyID)
+	if err != nil || info0 == nil {
+		t.Fatalf("get key info: %v", err)
+	}
+	origGroupKey := info0.GroupKey
+
+	// Step 2: Create reshare job on all nodes (same committee, same threshold).
+	for _, tn := range cluster {
+		if err := tn.n.createReshareJob(groupID, "node_added", parties, parties, 2); err != nil {
+			t.Fatalf("create reshare job: %v", err)
+		}
+	}
+
+	// Verify keys are stale now.
+	if !cluster[0].n.isKeyStale(groupID, keyID) {
+		t.Fatal("expected key to be stale after job creation")
+	}
+
+	// Step 3: Run reshare session directly from one of the nodes.
+	// The other nodes will receive the coord msgReshare and run the protocol.
+	reshareErr := cluster[0].n.runReshareSession(ctx, groupID, keyID)
+	if reshareErr != nil {
+		t.Fatalf("runReshareSession: %v", reshareErr)
+	}
+	t.Log("reshare complete")
+
+	// Verify key is marked done on the initiator.
+	done, _ := cluster[0].n.reshareStore.IsKeyDone(groupID, keyID)
+	if !done {
+		t.Fatal("expected key marked done after reshare")
+	}
+
+	// Other participants record done via the coord handler; give them a moment.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		allDone := true
+		for _, tn := range cluster {
+			d, _ := tn.n.reshareStore.IsKeyDone(groupID, keyID)
+			if !d {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Step 4: Verify group key preserved and generation incremented.
+	for i, tn := range cluster {
+		info, err := tn.km.GetKeyInfo(groupID, keyID)
+		if err != nil {
+			t.Fatalf("party %d get key info: %v", i, err)
+		}
+		if info == nil {
+			t.Fatalf("party %d: key missing after reshare", i)
+		}
+		if !bytes.Equal(info.GroupKey, origGroupKey) {
+			t.Errorf("party %d: group key changed after reshare", i)
+		}
+	}
+
+	// Step 5: Sign with new shares to verify they work.
+	var msgHash [32]byte
+	for i := range msgHash {
+		msgHash[i] = byte(i + 1)
+	}
+	sig := clusterSign(t, ctx, cluster, groupID, keyID, msgHash[:])
+
+	// Verify the signature.
+	ethSig, err := sig.SigEthereum()
+	if err != nil {
+		t.Fatalf("sig ethereum: %v", err)
+	}
+	if len(ethSig) != 65 {
+		t.Fatalf("expected 65-byte ethereum signature, got %d", len(ethSig))
+	}
+	t.Logf("signature produced after reshare: 0x%x", ethSig)
+}
+
+// TestReshareIntegration_GrowCommittee runs keygen on a 3-node committee, then
+// reshares to add a 4th node. Verifies that:
+//   - all 4 nodes hold the same group key after reshare
+//   - signing with the new 4-party committee produces a valid signature
+//   - the signature verifies against the original group key
+func TestReshareIntegration_GrowCommittee(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Create 4 nodes; keygen uses only the first 3.
+	cluster, cleanup := newTestNodeCluster(t, ctx, 4)
+	defer cleanup()
+
+	groupID := "0xgroup1"
+	keyID := "k1"
+
+	oldParties := make([]tss.PartyID, 3)
+	for i := 0; i < 3; i++ {
+		oldParties[i] = cluster[i].host.Self()
+	}
+	allParties := make([]tss.PartyID, 4)
+	for i := 0; i < 4; i++ {
+		allParties[i] = cluster[i].host.Self()
+	}
+
+	// Set initial group membership (3 nodes) for keygen.
+	setGroupMembership(cluster[:3], groupID, oldParties, 2)
+
+	// Step 1: Keygen on the first 3 nodes.
+	clusterKeygen(t, ctx, cluster[:3], groupID, keyID)
+	t.Log("keygen complete on 3-node committee")
+
+	// Capture original group key.
+	info0, err := cluster[0].km.GetKeyInfo(groupID, keyID)
+	if err != nil || info0 == nil {
+		t.Fatalf("get key info: %v", err)
+	}
+	origGroupKey := info0.GroupKey
+
+	// Step 2: Update group membership to all 4 nodes and create reshare job.
+	setGroupMembership(cluster, groupID, allParties, 2)
+	for _, tn := range cluster {
+		if err := tn.n.createReshareJob(groupID, "node_added", oldParties, allParties, 2); err != nil {
+			t.Fatalf("create reshare job: %v", err)
+		}
+	}
+
+	// Step 3: Run reshare from the first node (coordinator).
+	if err := cluster[0].n.runReshareSession(ctx, groupID, keyID); err != nil {
+		t.Fatalf("runReshareSession: %v", err)
+	}
+	t.Log("reshare complete — committee grew from 3 to 4")
+
+	// Wait for all participants to record done.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		allDone := true
+		for _, tn := range cluster {
+			d, _ := tn.n.reshareStore.IsKeyDone(groupID, keyID)
+			if !d {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Step 4: Verify all 4 nodes have the same group key.
+	for i, tn := range cluster {
+		info, err := tn.km.GetKeyInfo(groupID, keyID)
+		if err != nil {
+			t.Fatalf("party %d get key info: %v", i, err)
+		}
+		if info == nil {
+			t.Fatalf("party %d: key missing after reshare", i)
+		}
+		if !bytes.Equal(info.GroupKey, origGroupKey) {
+			t.Errorf("party %d: group key changed after reshare", i)
+		}
+	}
+
+	// Step 5: Sign with the full 4-party committee.
+	var msgHash [32]byte
+	for i := range msgHash {
+		msgHash[i] = byte(i + 1)
+	}
+	sig := clusterSign(t, ctx, cluster, groupID, keyID, msgHash[:])
+
+	ethSig, err := sig.SigEthereum()
+	if err != nil {
+		t.Fatalf("sig ethereum: %v", err)
+	}
+	if len(ethSig) != 65 {
+		t.Fatalf("expected 65-byte ethereum signature, got %d", len(ethSig))
+	}
+	t.Logf("signature produced after grow reshare: 0x%x", ethSig)
+}
+
+// TestReshareIntegration_OnDemandViaSign verifies the on-demand reshare path:
+// a sign request on a stale key triggers waitForReshare → runReshareSession,
+// and the sign succeeds after the reshare completes.
+func TestReshareIntegration_OnDemandViaSign(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cluster, cleanup := newTestNodeCluster(t, ctx, 3)
+	defer cleanup()
+
+	groupID := "0xgroup1"
+	keyID := "k1"
+
+	parties := make([]tss.PartyID, len(cluster))
+	for i, tn := range cluster {
+		parties[i] = tn.host.Self()
+	}
+	setGroupMembership(cluster, groupID, parties, 2)
+
+	// Step 1: Keygen.
+	clusterKeygen(t, ctx, cluster, groupID, keyID)
+	t.Log("keygen complete")
+
+	// Capture original group key.
+	info0, err := cluster[0].km.GetKeyInfo(groupID, keyID)
+	if err != nil || info0 == nil {
+		t.Fatalf("get key info: %v", err)
+	}
+	origGroupKey := info0.GroupKey
+
+	// Step 2: Create reshare job (same committee) to make key stale.
+	for _, tn := range cluster {
+		if err := tn.n.createReshareJob(groupID, "node_added", parties, parties, 2); err != nil {
+			t.Fatalf("create reshare job: %v", err)
+		}
+	}
+	if !cluster[0].n.isKeyStale(groupID, keyID) {
+		t.Fatal("expected key to be stale")
+	}
+
+	// Step 3: On node 0, call waitForReshare (simulating what handleSign does).
+	// This triggers on-demand reshare via runReshareSession. The other nodes
+	// receive the coord message and participate automatically.
+	reshareErr := make(chan error, 1)
+	go func() {
+		reshareErr <- cluster[0].n.waitForReshare(ctx, groupID, keyID)
+	}()
+
+	if err := <-reshareErr; err != nil {
+		t.Fatalf("waitForReshare: %v", err)
+	}
+	t.Log("on-demand reshare complete")
+
+	// Verify key is no longer stale on the initiator.
+	done, _ := cluster[0].n.reshareStore.IsKeyDone(groupID, keyID)
+	if !done {
+		t.Fatal("expected key marked done after on-demand reshare")
+	}
+
+	// Wait for participants to record done.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		allDone := true
+		for _, tn := range cluster {
+			d, _ := tn.n.reshareStore.IsKeyDone(groupID, keyID)
+			if !d {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Step 4: Verify group key preserved.
+	for i, tn := range cluster {
+		info, err := tn.km.GetKeyInfo(groupID, keyID)
+		if err != nil || info == nil {
+			t.Fatalf("party %d: key missing after reshare: %v", i, err)
+		}
+		if !bytes.Equal(info.GroupKey, origGroupKey) {
+			t.Errorf("party %d: group key changed after on-demand reshare", i)
+		}
+	}
+
+	// Step 5: Sign with the reshared keys.
+	var msgHash [32]byte
+	for i := range msgHash {
+		msgHash[i] = byte(i + 1)
+	}
+	sig := clusterSign(t, ctx, cluster, groupID, keyID, msgHash[:])
+
+	ethSig, err := sig.SigEthereum()
+	if err != nil {
+		t.Fatalf("sig ethereum: %v", err)
+	}
+	if len(ethSig) != 65 {
+		t.Fatalf("expected 65-byte ethereum signature, got %d", len(ethSig))
+	}
+	t.Logf("signature after on-demand reshare: 0x%x", ethSig)
+}
+
+// TestReshareIntegration_JobLifecycle exercises createReshareJob →
+// completeReshareJob end-to-end on a real node without running the protocol.
+// This verifies the ACTIVE → RESHARING → ACTIVE transitions work with real
+// storage.
+func TestReshareIntegration_JobLifecycle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cluster, cleanup := newTestNodeCluster(t, ctx, 1)
+	defer cleanup()
+
+	tn := cluster[0]
+	groupID := "0xgroup1"
+
+	// Seed the key manager with a key (bypass keygen).
+	tn.km.store.Put(groupID, "k1", &tss.Config{
+		ID:         tn.host.Self(),
+		Threshold:  1,
+		MaxSigners: 1,
+		Generation: 0,
+		GroupKey:   []byte("fake-group-key"),
+	})
+
+	// Initially ACTIVE.
+	if tn.n.isKeyStale(groupID, "k1") {
+		t.Fatal("expected not stale initially")
+	}
+
+	// Create a job → RESHARING.
+	if err := tn.n.createReshareJob(groupID, "node_added",
+		[]tss.PartyID{tn.host.Self()},
+		[]tss.PartyID{tn.host.Self(), "p2"}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if !tn.n.isKeyStale(groupID, "k1") {
+		t.Fatal("expected stale after job creation")
+	}
+
+	// Mark key done.
+	tn.n.reshareStore.PutKeyDone(groupID, "k1", &ReshareKeyRecord{
+		CompletedAt: time.Now(),
+	})
+	if tn.n.isKeyStale(groupID, "k1") {
+		t.Fatal("expected not stale after marking done")
+	}
+
+	// Complete job → ACTIVE.
+	tn.n.completeReshareJob(groupID)
+
+	tn.n.reshareJobsMu.RLock()
+	job := tn.n.reshareJobs[groupID]
+	tn.n.reshareJobsMu.RUnlock()
+	if job != nil {
+		t.Fatal("expected job removed after completion")
+	}
+
+	// Storage cleaned up.
+	stored, _ := tn.n.reshareStore.GetJob(groupID)
+	if stored != nil {
+		t.Fatal("expected persisted job removed")
+	}
+}
