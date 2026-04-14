@@ -43,3 +43,6 @@ settings.local.json
 
 # Apalache model checker output
 _apalache-out/
+
+# Testnet inventory (contains IPs)
+testnet/ansible/inventory.yml
