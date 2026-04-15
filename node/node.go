@@ -66,10 +66,11 @@ type Node struct {
 	reshareMux     *network.MuxNetwork // multiplexed streams for reshare sessions
 	reshareJobsMu  sync.RWMutex
 	reshareJobs    map[string]*ReshareJob    // groupID → active job (nil = ACTIVE)
-	reshareKeysMu  sync.Mutex
-	reshareKeys    map[reshareKeyID]chan struct{} // per-key done channels
-	reshareCoordMu sync.Mutex
-	reshareCoord   map[string]bool               // groupID → is coordinator
+	reshareKeysMu      sync.Mutex
+	reshareKeys        map[reshareKeyID]chan struct{} // per-key done channels
+	resharePendingReady map[reshareKeyID]chan struct{} // closed when pending write completes
+	reshareCoordMu     sync.Mutex
+	reshareCoord       map[string]bool // groupID → is coordinator
 }
 
 // NodeInfo is returned by the /v1/info endpoint.

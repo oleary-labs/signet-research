@@ -39,6 +39,7 @@ func (n *Node) initReshareState(store *ReshareStore) {
 	}
 	n.reshareJobs = make(map[string]*ReshareJob)
 	n.reshareKeys = make(map[reshareKeyID]chan struct{})
+	n.resharePendingReady = make(map[reshareKeyID]chan struct{})
 	n.reshareCoord = make(map[string]bool)
 
 	// Load any pending jobs from storage (crash recovery).
@@ -74,6 +75,7 @@ func (n *Node) tryRegisterReshareKey(groupID, keyID string) bool {
 		return false
 	}
 	n.reshareKeys[k] = make(chan struct{})
+	n.resharePendingReady[k] = make(chan struct{})
 	return true
 }
 
@@ -87,7 +89,41 @@ func (n *Node) completeReshareKey(groupID, keyID string, success bool) {
 		close(ch)
 		delete(n.reshareKeys, k)
 	}
+	// Also clean up pending-ready channel.
+	delete(n.resharePendingReady, k)
 	n.reshareKeysMu.Unlock()
+}
+
+// signalPendingReady signals that the pending reshare result has been written
+// for a key. The commit handler waits on this before promoting.
+func (n *Node) signalPendingReady(groupID, keyID string) {
+	k := reshareKeyID{groupID, keyID}
+	n.reshareKeysMu.Lock()
+	ch, exists := n.resharePendingReady[k]
+	if exists {
+		close(ch)
+	}
+	n.reshareKeysMu.Unlock()
+}
+
+// waitPendingReady waits for the pending reshare result to be written, or
+// returns after the timeout. Returns true if the pending result is ready.
+func (n *Node) waitPendingReady(groupID, keyID string, timeout time.Duration) bool {
+	k := reshareKeyID{groupID, keyID}
+	n.reshareKeysMu.Lock()
+	ch := n.resharePendingReady[k]
+	n.reshareKeysMu.Unlock()
+	if ch == nil {
+		// No channel — the reshare goroutine already completed and cleaned up,
+		// or was never started. Pending should be available (or absent).
+		return true
+	}
+	select {
+	case <-ch:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // isKeyStale returns true if a key needs resharing: a job exists for the group,

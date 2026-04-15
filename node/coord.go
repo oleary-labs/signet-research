@@ -426,10 +426,10 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				return
 			}
 
-			// Protocol succeeded — result is in pending store. Release the key
-			// registration so retries aren't blocked. The coordinator's commit
-			// message (msgReshareCommit) will promote pending to active. If the
-			// commit never arrives, pending is discarded on the next retry.
+			// Protocol succeeded — result is in pending store. Signal that
+			// pending is ready so the commit handler can proceed, then release
+			// the key registration so retries aren't blocked.
+			n.signalPendingReady(msg.GroupID, msg.KeyID)
 			n.completeReshareKey(msg.GroupID, msg.KeyID, false)
 			n.log.Info("coord: reshare protocol done, awaiting commit",
 				zap.String("group_id", msg.GroupID),
@@ -510,6 +510,11 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 
 	case msgReshareCommit:
 		// Coordinator says the reshare protocol succeeded on all nodes.
+		// Wait for the participant's reshare goroutine to finish writing
+		// the pending result — the commit can arrive before the local
+		// RunReshare has written to the pending store.
+		n.waitPendingReady(msg.GroupID, msg.KeyID, 10*time.Second)
+
 		// Promote pending result to active and record completion.
 		if err := n.km.CommitReshare(msg.GroupID, msg.KeyID); err != nil {
 			n.log.Error("coord: reshare commit failed",
