@@ -108,7 +108,8 @@ Signet devnet is up.
 | `devnet/node{1,2,3}.log` | signetd stdout/stderr |
 | `devnet/.pids` | PIDs used by `stop.sh` |
 | `data/node{1,2,3}/node.key` | Persistent libp2p identity keys |
-| `data/node{1,2,3}/keyshards.db` | bbolt key-shard store |
+| `data/node{1,2,3}/keyshards.db` | bbolt key-shard store (active keys) |
+| `data/node{1,2,3}/keyshards_archive.db` | bbolt archive store (pending reshare results + historical versions) |
 
 ## Stop
 

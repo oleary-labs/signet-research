@@ -93,7 +93,10 @@ func (m *mockKeyManager) ListGroups() ([]string, error) {
 	return out, nil
 }
 
-func (m *mockKeyManager) Close() error { return nil }
+func (m *mockKeyManager) CommitReshare(groupID, keyID string) error               { return nil }
+func (m *mockKeyManager) DiscardPendingReshare(groupID, keyID string) error       { return nil }
+func (m *mockKeyManager) RollbackReshare(groupID, keyID string, gen uint64) error { return nil }
+func (m *mockKeyManager) Close() error                                            { return nil }
 
 var _ KeyManager = (*mockKeyManager)(nil)
 

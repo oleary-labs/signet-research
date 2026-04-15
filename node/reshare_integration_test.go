@@ -61,6 +61,14 @@ func newTestNodeCluster(t *testing.T, ctx context.Context, numNodes int) ([]*tes
 			t.Fatal(err)
 		}
 
+		vs, err := openKeyVersionStore(dataDir)
+		if err != nil {
+			km.Close()
+			h.Close()
+			t.Fatal(err)
+		}
+		km.SetVersionStore(vs)
+
 		nodeCtx, cancel := context.WithCancel(ctx)
 		n := &Node{
 			log:    log,
@@ -96,7 +104,7 @@ func newTestNodeCluster(t *testing.T, ctx context.Context, numNodes int) ([]*tes
 	cleanup := func() {
 		for _, tn := range cluster {
 			tn.n.cancel()
-			tn.km.Close()
+			tn.km.Close() // also closes version store
 			tn.host.Close()
 		}
 	}

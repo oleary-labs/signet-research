@@ -241,6 +241,16 @@ func (s *MuxSession) Incoming() <-chan *tss.Message {
 	return s.incoming
 }
 
+// Redeliver puts a message back onto the incoming channel so that the next
+// reader (typically tss.Run) will see it. Used when a caller peeks at the
+// first message to verify the session is alive before handing off to Run.
+func (s *MuxSession) Redeliver(msg *tss.Message) {
+	select {
+	case s.incoming <- msg:
+	case <-s.done:
+	}
+}
+
 // Close cancels in-flight sends, waits briefly for them to drain, and
 // unregisters the session. The incoming channel is NOT closed; the TSS Run
 // loop exits via context cancellation. This avoids a race between

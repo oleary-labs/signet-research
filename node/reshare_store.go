@@ -157,6 +157,19 @@ func (rs *ReshareStore) IsKeyDone(groupID, keyID string) (bool, error) {
 	return done, err
 }
 
+// DeleteKeyDone removes the done marker for a single key. Used when rolling
+// back a partial reshare on retry.
+func (rs *ReshareStore) DeleteKeyDone(groupID, keyID string) error {
+	return rs.db.Update(func(tx *bbolt.Tx) error {
+		root := tx.Bucket(bucketReshareDone)
+		grp := root.Bucket([]byte(groupID))
+		if grp == nil {
+			return nil
+		}
+		return grp.Delete([]byte(keyID))
+	})
+}
+
 // CountKeysDone returns how many keys are marked done for a group.
 func (rs *ReshareStore) CountKeysDone(groupID string) (int, error) {
 	var count int

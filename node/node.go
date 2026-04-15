@@ -192,6 +192,15 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 			cancel()
 			return nil, fmt.Errorf("reshare store: %w", err)
 		}
+		// Open versioned key archive (separate db for easy GC).
+		vs, vsErr := openKeyVersionStore(cfg.DataDir)
+		if vsErr != nil {
+			km.Close()
+			h.Close()
+			cancel()
+			return nil, fmt.Errorf("key version store: %w", vsErr)
+		}
+		lkm.SetVersionStore(vs)
 	} else {
 		// Remote KMS: open a dedicated bbolt for reshare job tracking.
 		reshareDB, dbErr := openReshareDB(cfg.DataDir)

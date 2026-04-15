@@ -20,10 +20,22 @@ type KeyManager interface {
 	RunSign(ctx context.Context, p SignParams) (*tss.Signature, error)
 
 	// RunReshare executes the key reshare protocol, redistributing shares
-	// of an existing key to a new committee. The result indicates whether
-	// this node is in the new committee (has a new key share) or is
-	// old-only (sentinel config, no key material).
+	// of an existing key to a new committee. The result is written to a
+	// pending store (not active). Call CommitReshare to promote, or
+	// DiscardPendingReshare to discard.
 	RunReshare(ctx context.Context, p ReshareParams) (*ReshareResult, error)
+
+	// CommitReshare promotes a pending reshare result to active, archiving
+	// the previous active version. No-op if nothing is pending.
+	CommitReshare(groupID, keyID string) error
+
+	// DiscardPendingReshare removes a pending reshare result without
+	// promoting it. The active key is untouched.
+	DiscardPendingReshare(groupID, keyID string) error
+
+	// RollbackReshare restores a previous version as the active key.
+	// Used when a retry discovers partial commit across the committee.
+	RollbackReshare(groupID, keyID string, generation uint64) error
 
 	// GetKeyInfo returns public metadata for a stored key shard, or
 	// (nil, nil) if the key does not exist.

@@ -14,8 +14,9 @@ import (
 // in-process via the tss package. It owns the KeyShardStore (bbolt) and an
 // in-memory config cache.
 type LocalKeyManager struct {
-	store *KeyShardStore
-	log   *zap.Logger
+	store    *KeyShardStore
+	versions *KeyVersionStore // nil if version store not available
+	log      *zap.Logger
 
 	mu      sync.RWMutex
 	configs map[shardKey]*tss.Config
@@ -32,6 +33,12 @@ func NewLocalKeyManager(ctx context.Context, dataDir string, log *zap.Logger) (*
 		log:     log,
 		configs: make(map[shardKey]*tss.Config),
 	}, nil
+}
+
+// SetVersionStore attaches a KeyVersionStore for versioned reshare storage.
+// Must be called before any reshare operations.
+func (lkm *LocalKeyManager) SetVersionStore(vs *KeyVersionStore) {
+	lkm.versions = vs
 }
 
 // RunKeygen executes the FROST keygen protocol, persists the result, and
@@ -91,8 +98,9 @@ func (lkm *LocalKeyManager) RunSign(ctx context.Context, p SignParams) (*tss.Sig
 
 // RunReshare executes the FROST reshare protocol for a single key.
 // Old parties provide their existing config; new-only parties have no config
-// for this key. The result is persisted: new parties get a fresh config,
-// old-only parties get a sentinel (KeyShareBytes = nil, Generation+1).
+// for this key. The result is written to the pending store (not active).
+// Call CommitReshare to promote pending to active, or DiscardPendingReshare
+// to discard on failure/retry.
 func (lkm *LocalKeyManager) RunReshare(ctx context.Context, p ReshareParams) (*ReshareResult, error) {
 	// Load existing config (nil for new-only parties).
 	cfg, err := lkm.loadConfig(p.GroupID, p.KeyID)
@@ -112,23 +120,109 @@ func (lkm *LocalKeyManager) RunReshare(ctx context.Context, p ReshareParams) (*R
 		return nil, fmt.Errorf("unexpected result type %T", result)
 	}
 
-	// Persist the new config (sentinel or full).
-	if err := lkm.store.Put(p.GroupID, p.KeyID, newCfg); err != nil {
-		lkm.log.Warn("persist reshared shard failed",
-			zap.String("group_id", p.GroupID),
-			zap.String("key_id", p.KeyID),
-			zap.Error(err))
+	// Write to pending store if available; fall back to direct write.
+	if lkm.versions != nil {
+		if err := lkm.versions.WritePending(p.GroupID, p.KeyID, newCfg); err != nil {
+			lkm.log.Warn("persist pending reshare failed",
+				zap.String("group_id", p.GroupID),
+				zap.String("key_id", p.KeyID),
+				zap.Error(err))
+		}
+	} else {
+		// No version store — write directly (legacy behavior).
+		if err := lkm.store.Put(p.GroupID, p.KeyID, newCfg); err != nil {
+			lkm.log.Warn("persist reshared shard failed",
+				zap.String("group_id", p.GroupID),
+				zap.String("key_id", p.KeyID),
+				zap.Error(err))
+		}
+		k := shardKey{p.GroupID, p.KeyID}
+		lkm.mu.Lock()
+		lkm.configs[k] = newCfg
+		lkm.mu.Unlock()
 	}
-
-	k := shardKey{p.GroupID, p.KeyID}
-	lkm.mu.Lock()
-	lkm.configs[k] = newCfg
-	lkm.mu.Unlock()
 
 	return &ReshareResult{
 		OldOnly:    newCfg.KeyShareBytes == nil,
 		Generation: newCfg.Generation,
 	}, nil
+}
+
+// CommitReshare promotes a pending reshare result to active. The current
+// active config is archived as a historical version before being overwritten.
+func (lkm *LocalKeyManager) CommitReshare(groupID, keyID string) error {
+	if lkm.versions == nil {
+		return nil // no version store — RunReshare already wrote directly
+	}
+
+	pending, err := lkm.versions.GetPending(groupID, keyID)
+	if err != nil {
+		return fmt.Errorf("read pending: %w", err)
+	}
+	if pending == nil {
+		return nil // nothing to commit (already committed or never written)
+	}
+
+	// Archive the current active config before overwriting.
+	current, err := lkm.store.Get(groupID, keyID)
+	if err != nil {
+		return fmt.Errorf("read current: %w", err)
+	}
+	if current != nil {
+		if err := lkm.versions.ArchiveVersion(groupID, keyID, current); err != nil {
+			return fmt.Errorf("archive current: %w", err)
+		}
+	}
+
+	// Promote pending to active.
+	if err := lkm.store.Put(groupID, keyID, pending); err != nil {
+		return fmt.Errorf("write active: %w", err)
+	}
+
+	// Update in-memory cache.
+	k := shardKey{groupID, keyID}
+	lkm.mu.Lock()
+	lkm.configs[k] = pending
+	lkm.mu.Unlock()
+
+	// Clean up pending.
+	return lkm.versions.DiscardPending(groupID, keyID)
+}
+
+// DiscardPendingReshare removes a pending reshare result without promoting it.
+// The active key is untouched.
+func (lkm *LocalKeyManager) DiscardPendingReshare(groupID, keyID string) error {
+	if lkm.versions == nil {
+		return nil
+	}
+	return lkm.versions.DiscardPending(groupID, keyID)
+}
+
+// RollbackReshare restores a previous version as the active key. Used when a
+// retry discovers that this node committed a reshare but other nodes didn't.
+func (lkm *LocalKeyManager) RollbackReshare(groupID, keyID string, generation uint64) error {
+	if lkm.versions == nil {
+		return fmt.Errorf("no version store available")
+	}
+
+	old, err := lkm.versions.GetVersion(groupID, keyID, generation)
+	if err != nil {
+		return fmt.Errorf("read version %d: %w", generation, err)
+	}
+	if old == nil {
+		return fmt.Errorf("version %d not found for %s/%s", generation, groupID, keyID)
+	}
+
+	if err := lkm.store.Put(groupID, keyID, old); err != nil {
+		return fmt.Errorf("write active: %w", err)
+	}
+
+	k := shardKey{groupID, keyID}
+	lkm.mu.Lock()
+	lkm.configs[k] = old
+	lkm.mu.Unlock()
+
+	return nil
 }
 
 // GetKeyInfo returns public metadata for a stored key, or (nil, nil) if not found.
@@ -153,8 +247,11 @@ func (lkm *LocalKeyManager) ListGroups() ([]string, error) {
 	return lkm.store.ListGroups()
 }
 
-// Close closes the underlying key shard store.
+// Close closes the underlying stores.
 func (lkm *LocalKeyManager) Close() error {
+	if lkm.versions != nil {
+		lkm.versions.Close()
+	}
 	return lkm.store.Close()
 }
 

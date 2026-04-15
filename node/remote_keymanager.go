@@ -123,6 +123,21 @@ func (rkm *RemoteKeyManager) RunReshare(ctx context.Context, p ReshareParams) (*
 	return nil, fmt.Errorf("reshare not implemented in remote KMS")
 }
 
+// CommitReshare is a no-op stub — reshare not yet implemented in remote KMS.
+func (rkm *RemoteKeyManager) CommitReshare(groupID, keyID string) error {
+	return nil
+}
+
+// DiscardPendingReshare is a no-op stub.
+func (rkm *RemoteKeyManager) DiscardPendingReshare(groupID, keyID string) error {
+	return nil
+}
+
+// RollbackReshare is a no-op stub.
+func (rkm *RemoteKeyManager) RollbackReshare(groupID, keyID string, generation uint64) error {
+	return fmt.Errorf("reshare rollback not implemented in remote KMS")
+}
+
 // GetKeyInfo returns public metadata for a stored key.
 // Returns (nil, nil) if the key does not exist (matching KeyManager contract).
 func (rkm *RemoteKeyManager) GetKeyInfo(groupID, keyID string) (*KeyInfo, error) {

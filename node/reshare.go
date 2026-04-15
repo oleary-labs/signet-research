@@ -216,6 +216,9 @@ func (n *Node) runReshareSession(ctx context.Context, groupID, keyID string) (er
 		return fmt.Errorf("broadcast coord: %w", err)
 	}
 
+	// Discard any stale pending from a previous failed attempt.
+	n.km.DiscardPendingReshare(groupID, keyID)
+
 	result, err := n.km.RunReshare(sessCtx, ReshareParams{
 		Host:         n.host,
 		SN:           sn,
@@ -228,7 +231,38 @@ func (n *Node) runReshareSession(ctx context.Context, groupID, keyID string) (er
 		NewThreshold: job.NewThreshold,
 	})
 	if err != nil {
+		// Protocol failed — discard any pending result so old share stays active.
+		n.km.DiscardPendingReshare(groupID, keyID)
 		return fmt.Errorf("protocol: %w", err)
+	}
+
+	// Protocol succeeded locally. Broadcast commit to all participants so they
+	// promote their pending results to active. Use a fresh timeout — the session
+	// context may be nearly expired.
+	commitCtx, commitCancel := context.WithTimeout(ctx, 15*time.Second)
+	commitErr := n.broadcastCoord(commitCtx, allParties, coordMsg{
+		Type:         msgReshareCommit,
+		GroupID:      groupID,
+		KeyID:        keyID,
+		ReshareNonce: nonce,
+	})
+	commitCancel()
+	if commitErr != nil {
+		n.log.Warn("reshare: commit broadcast failed, committing locally",
+			zap.String("group_id", groupID),
+			zap.String("key_id", keyID),
+			zap.Error(commitErr))
+		// Commit locally even if broadcast fails — participants that missed the
+		// commit will get it on retry via the IsKeyDone+rollback path.
+	}
+
+	// Commit locally: archive old share, promote pending to active.
+	if err := n.km.CommitReshare(groupID, keyID); err != nil {
+		n.log.Error("reshare: local commit failed",
+			zap.String("group_id", groupID),
+			zap.String("key_id", keyID),
+			zap.Error(err))
+		return fmt.Errorf("commit: %w", err)
 	}
 
 	// Record completion and signal waiters via the deferred completeReshareKey.
@@ -354,6 +388,10 @@ func (n *Node) coordinatorLoop(groupID string, job *ReshareJob, concurrency int)
 
 				err := n.runReshareSession(n.ctx, groupID, kid)
 				if err != nil {
+					n.log.Error("reshare: coordinator key failed",
+						zap.String("group_id", groupID),
+						zap.String("key_id", kid),
+						zap.Error(err))
 					failedMu.Lock()
 					failed = append(failed, kid)
 					failedMu.Unlock()

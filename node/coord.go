@@ -18,6 +18,13 @@ import (
 
 const coordProtocol = protocol.ID("/signet/coord/1.0.0")
 
+// Coord stream ACK/NACK responses. The participant writes a single byte after
+// processing the coord message to indicate readiness.
+const (
+	coordNACK byte = 0 // rejected — peer cannot participate
+	coordACK  byte = 1 // accepted — peer is ready to run the protocol
+)
+
 type coordMsgType uint8
 
 const (
@@ -26,6 +33,7 @@ const (
 	msgReshare         coordMsgType = 3
 	msgReshareComplete coordMsgType = 4
 	msgReshareBatch    coordMsgType = 5
+	msgReshareCommit   coordMsgType = 6
 )
 
 // coordMsg is sent from the initiating node to each other participant to start
@@ -170,7 +178,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 			n.log.Warn("coord: keygen rejected, key already exists",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
-			s.Write([]byte{0}) // NACK
+			s.Write([]byte{coordNACK})
 			return
 		}
 
@@ -192,7 +200,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 
 		// ACK only after registering the session stream handler, so the
 		// initiator knows all parties are ready before starting the protocol.
-		s.Write([]byte{1})
+		s.Write([]byte{coordACK})
 
 		go func() {
 			defer sessCancel()
@@ -234,7 +242,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				zap.Error(err))
 			return
 		}
-		s.Write([]byte{1})
+		s.Write([]byte{coordACK})
 
 		go func() {
 			defer sessCancel()
@@ -285,7 +293,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		// Validate that this node knows about the reshare job.
 		if n.reshareStore == nil {
 			n.log.Warn("coord: reshare rejected, reshare store not initialized")
-			s.Write([]byte{0})
+			s.Write([]byte{coordNACK})
 			return
 		}
 
@@ -296,24 +304,50 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				n.log.Warn("coord: reshare rejected, could not create job",
 					zap.String("group_id", msg.GroupID),
 					zap.Error(err))
-				s.Write([]byte{0})
+				s.Write([]byte{coordNACK})
 				return
 			}
 			job, _ = n.reshareStore.GetJob(msg.GroupID)
 			if job == nil {
 				n.log.Warn("coord: reshare rejected, job creation returned nil",
 					zap.String("group_id", msg.GroupID))
-				s.Write([]byte{0})
+				s.Write([]byte{coordNACK})
 				return
 			}
 		}
 
-		// Check if this key is already done for this job.
+		// Check if this key is already done for this job. If so, a previous
+		// reshare partially succeeded: this node committed but the coordinator
+		// didn't. Roll back to the previous version so we can re-participate
+		// with consistent key state.
 		done, _ := n.reshareStore.IsKeyDone(msg.GroupID, msg.KeyID)
 		if done {
-			// Key already reshared — ACK but no-op (handles coordinator/on-demand race).
-			s.Write([]byte{1})
-			return
+			info, _ := n.km.GetKeyInfo(msg.GroupID, msg.KeyID)
+			if info != nil {
+				// Active key is at generation N (post-reshare). Roll back to N-1.
+				gen := uint64(0) // default: roll back to generation 0
+				// Read current config to determine generation.
+				if lkm, ok := n.km.(*LocalKeyManager); ok {
+					if cfg, err := lkm.loadConfig(msg.GroupID, msg.KeyID); err == nil && cfg != nil && cfg.Generation > 0 {
+						gen = cfg.Generation - 1
+					}
+				}
+				if err := n.km.RollbackReshare(msg.GroupID, msg.KeyID, gen); err != nil {
+					n.log.Error("coord: reshare rollback failed, NACKing",
+						zap.String("group_id", msg.GroupID),
+						zap.String("key_id", msg.KeyID),
+						zap.Uint64("target_generation", gen),
+						zap.Error(err))
+					s.Write([]byte{coordNACK})
+					return
+				}
+				n.log.Warn("coord: reshare rollback for partial commit",
+					zap.String("group_id", msg.GroupID),
+					zap.String("key_id", msg.KeyID),
+					zap.Uint64("restored_generation", gen))
+			}
+			n.reshareStore.DeleteKeyDone(msg.GroupID, msg.KeyID)
+			// Fall through to normal participation.
 		}
 
 		// Check/register per-key reshare channel. If another session is
@@ -322,16 +356,19 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 			n.log.Debug("coord: reshare NACK, session already running",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
-			s.Write([]byte{0})
+			s.Write([]byte{coordNACK})
 			return
 		}
+
+		// Discard any stale pending result from a previous failed attempt.
+		n.km.DiscardPendingReshare(msg.GroupID, msg.KeyID)
 
 		allParties := msg.Parties // old ∪ new
 		sessID := reshareSessionID(msg.GroupID, msg.KeyID, msg.ReshareNonce)
 		sessCtx, sessCancel := context.WithTimeout(n.ctx, 60*time.Second)
 		sn := n.reshareMux.Session(sessCtx, sessID, allParties)
 
-		s.Write([]byte{1})
+		s.Write([]byte{coordACK})
 
 		go func() {
 			defer sessCancel()
@@ -340,6 +377,33 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 			n.log.Info("coord: reshare started",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
+
+			// Wait for the first protocol message before committing to the
+			// full session timeout. If the coordinator's broadcast partially
+			// failed, it won't call RunReshare and no round-1 message will
+			// arrive. Detect this quickly so we release the key registration
+			// and don't block retries.
+			select {
+			case firstMsg, ok := <-sn.Incoming():
+				if !ok || firstMsg == nil {
+					n.completeReshareKey(msg.GroupID, msg.KeyID, false)
+					n.log.Warn("coord: reshare aborted, no first message",
+						zap.String("group_id", msg.GroupID),
+						zap.String("key_id", msg.KeyID))
+					return
+				}
+				// Deliver the message to the protocol by re-enqueueing it.
+				sn.Redeliver(firstMsg)
+			case <-time.After(10 * time.Second):
+				n.completeReshareKey(msg.GroupID, msg.KeyID, false)
+				n.log.Warn("coord: reshare aborted, coordinator did not start",
+					zap.String("group_id", msg.GroupID),
+					zap.String("key_id", msg.KeyID))
+				return
+			case <-sessCtx.Done():
+				n.completeReshareKey(msg.GroupID, msg.KeyID, false)
+				return
+			}
 
 			result, err := n.km.RunReshare(sessCtx, ReshareParams{
 				Host:         n.host,
@@ -353,6 +417,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				NewThreshold: msg.NewThreshold,
 			})
 			if err != nil {
+				n.km.DiscardPendingReshare(msg.GroupID, msg.KeyID)
 				n.completeReshareKey(msg.GroupID, msg.KeyID, false)
 				n.log.Error("coord: reshare failed",
 					zap.String("group_id", msg.GroupID),
@@ -361,25 +426,21 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				return
 			}
 
-			// Record completion.
-			n.reshareStore.PutKeyDone(msg.GroupID, msg.KeyID, &ReshareKeyRecord{
-				CompletedAt: time.Now(),
-				ByNode:      string(n.host.Self()),
-				OldOnly:     result.OldOnly,
-			})
-			n.completeReshareKey(msg.GroupID, msg.KeyID, true)
-
-			n.log.Info("coord: reshare complete",
+			// Protocol succeeded — result is in pending store. Release the key
+			// registration so retries aren't blocked. The coordinator's commit
+			// message (msgReshareCommit) will promote pending to active. If the
+			// commit never arrives, pending is discarded on the next retry.
+			n.completeReshareKey(msg.GroupID, msg.KeyID, false)
+			n.log.Info("coord: reshare protocol done, awaiting commit",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID),
-				zap.Bool("old_only", result.OldOnly),
 				zap.Uint64("generation", result.Generation))
 		}()
 
 	case msgReshareBatch:
 		if n.reshareStore == nil {
 			n.log.Warn("coord: reshare batch rejected, reshare store not initialized")
-			s.Write([]byte{0})
+			s.Write([]byte{coordNACK})
 			return
 		}
 
@@ -389,13 +450,13 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 			if err := n.createReshareJob(msg.GroupID, "refresh", msg.OldParties, msg.NewParties, msg.Threshold); err != nil {
 				n.log.Warn("coord: reshare batch rejected, could not create job",
 					zap.String("group_id", msg.GroupID), zap.Error(err))
-				s.Write([]byte{0})
+				s.Write([]byte{coordNACK})
 				return
 			}
 		}
 
 		allParties := msg.Parties
-		s.Write([]byte{1}) // ACK — we're ready to process the batch.
+		s.Write([]byte{coordACK})
 
 		n.log.Info("coord: reshare batch received",
 			zap.String("group_id", msg.GroupID),
@@ -447,12 +508,33 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 			n.completeReshareKey(msg.GroupID, bk.KeyID, true)
 		}
 
+	case msgReshareCommit:
+		// Coordinator says the reshare protocol succeeded on all nodes.
+		// Promote pending result to active and record completion.
+		if err := n.km.CommitReshare(msg.GroupID, msg.KeyID); err != nil {
+			n.log.Error("coord: reshare commit failed",
+				zap.String("group_id", msg.GroupID),
+				zap.String("key_id", msg.KeyID),
+				zap.Error(err))
+			s.Write([]byte{coordNACK})
+			return
+		}
+		n.reshareStore.PutKeyDone(msg.GroupID, msg.KeyID, &ReshareKeyRecord{
+			CompletedAt: time.Now(),
+			ByNode:      string(n.host.Self()),
+		})
+		n.completeReshareKey(msg.GroupID, msg.KeyID, true)
+		n.log.Info("coord: reshare committed",
+			zap.String("group_id", msg.GroupID),
+			zap.String("key_id", msg.KeyID))
+		s.Write([]byte{coordACK})
+
 	case msgReshareComplete:
 		groupID := msg.GroupID
 		n.log.Info("coord: reshare complete received, cleaning up",
 			zap.String("group_id", groupID))
 		n.completeReshareJob(groupID)
-		s.Write([]byte{1})
+		s.Write([]byte{coordACK})
 
 	default:
 		n.log.Warn("coord: unknown msg type", zap.Uint8("type", uint8(msg.Type)))
@@ -506,7 +588,7 @@ func (n *Node) broadcastCoord(ctx context.Context, targets []tss.PartyID, msg co
 				ch <- result{pid, fmt.Errorf("ack from %s: %w", pid, err)}
 				return
 			}
-			if ack[0] == 0 {
+			if ack[0] == coordNACK {
 				ch <- result{pid, fmt.Errorf("rejected by %s", pid)}
 				return
 			}
