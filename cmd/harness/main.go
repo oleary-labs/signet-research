@@ -22,9 +22,10 @@ func main() {
 
 func run() error {
 	var (
-		envFile  = flag.String("env", "devnet/.env", "path to environment file")
-		outFile  = flag.String("out", "", "path to write JSON lines output (optional)")
-		timeout  = flag.Duration("timeout", 30*time.Second, "per-request timeout")
+		envFile   = flag.String("env", "devnet/.env", "path to environment file")
+		outFile   = flag.String("out", "", "path to write JSON lines output (optional)")
+		timeout   = flag.Duration("timeout", 30*time.Second, "per-request timeout")
+		stopAfter = flag.Bool("stop-after", false, "stop testnet nodes via ansible after run completes")
 	)
 
 	// Subcommand flags — parsed after the subcommand name.
@@ -73,6 +74,11 @@ func run() error {
 		return fmt.Errorf("load env %s: %w", *envFile, err)
 	}
 	fmt.Printf("loaded env: %d nodes, group %s\n", len(env.Nodes), env.GroupAddress)
+
+	// Stop testnet nodes on exit to avoid burning RPC quota while idle.
+	if *stopAfter {
+		defer stopTestnetNodes(*envFile, env)
+	}
 
 	// Build clients.
 	clients := make([]*Client, len(env.Nodes))

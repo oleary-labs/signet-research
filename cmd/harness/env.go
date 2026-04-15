@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // deployerPK returns the DEPLOYER_PK from the OS environment (not the .env file).
@@ -85,4 +88,46 @@ func LoadEnv(path string) (*Env, error) {
 	}
 
 	return env, nil
+}
+
+// stopTestnetNodes stops all signetd processes via ansible. Called as a deferred
+// cleanup to prevent idle nodes from burning RPC quota. Best-effort: logs
+// errors but does not fail the harness run.
+func stopTestnetNodes(envFile string, env *Env) {
+	// Derive ansible dir: testnet/.env → testnet/ansible/
+	envDir := filepath.Dir(envFile)
+	ansibleDir := filepath.Join(envDir, "ansible")
+	playbook := filepath.Join(ansibleDir, "manage.yml")
+
+	if _, err := os.Stat(playbook); err != nil {
+		fmt.Fprintf(os.Stderr, "\nstop-after: ansible playbook not found at %s, skipping\n", playbook)
+		return
+	}
+
+	fmt.Printf("\n[stop-after] stopping testnet nodes via ansible...\n")
+
+	cmd := exec.Command("ansible-playbook", "manage.yml", "-e", "action=stop")
+	cmd.Dir = ansibleDir
+	// Pass RPC_URL and FACTORY_ADDRESS so ansible inventory resolves.
+	cmd.Env = append(os.Environ(),
+		"SEPOLIA_RPC_URL="+env.RPCURL,
+		"FACTORY_ADDRESS="+env.FactoryAddress,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Run() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[stop-after] ansible stop failed: %v\n", err)
+		} else {
+			fmt.Println("[stop-after] all nodes stopped")
+		}
+	case <-time.After(60 * time.Second):
+		fmt.Fprintf(os.Stderr, "[stop-after] ansible stop timed out after 60s\n")
+		cmd.Process.Kill()
+	}
 }
