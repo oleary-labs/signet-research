@@ -1,25 +1,34 @@
 # Reshare Protocol
 
-Models for key reshare, split into two independent layers connected by the `KeyManager` interface boundary.
+Models for key reshare at three layers: cryptographic protocol, single-node lifecycle, and multi-node cluster.
 
 ```
+cluster.qnt                   (system-wide, multi-node)
+    |
+    |  contains as internal abstraction
+    v
 lifecycle.qnt          reshare.qnt
-(node orchestration)           (cryptographic protocol)
+(single-node view)             (cryptographic protocol)
                   \               /
                    \             /
                     KeyManager interface
                    (node/keymanager.go)
 ```
 
-The lifecycle spec manages **which** keys need resharing and **when**. The reshare spec models **how** each key is reshared. They are intentionally independent: you can verify lifecycle properties without modeling the cryptographic rounds, and vice versa.
+- **`cluster.qnt`** is the coherent system-wide model for reasoning about the hardening-doc invariants (I1–I9). It models multiple nodes with per-node local state, a canonical chain, per-key share state across nodes (with a pending/committed distinction), leader election, crash/recover, and nondeterministic partial-failure outcomes for reshare attempts.
+- **`lifecycle.qnt`** is the single-node view of orchestration bookkeeping. Useful for reasoning about a single node's ACTIVE/RESHARING transitions in isolation but cannot express cross-node invariants.
+- **`reshare.qnt`** models the 3-round FROST reshare cryptographic protocol independently of any orchestration layer.
+
+The cluster spec supersedes the lifecycle spec for reasoning about hardening-doc invariants. The lifecycle spec remains useful as a reference for single-node bookkeeping logic.
 
 ## Files
 
 | File | Layer | What it models |
 |------|-------|----------------|
+| `cluster.qnt` | System | Multi-node lifecycle with per-key share state and commit atomicity |
 | `reshare.qnt` | TSS / KMS | 3-round cryptographic reshare protocol |
-| `lifecycle.qnt` | Node | Per-group ACTIVE/RESHARING state machine |
-| `test.qnt` | -- | Deterministic scenario tests for both specs |
+| `lifecycle.qnt` | Single-node | Per-group ACTIVE/RESHARING bookkeeping (single-node view) |
+| `test.qnt` | -- | Deterministic scenario tests for reshare.qnt and lifecycle.qnt |
 
 ## Implementation status
 
@@ -110,7 +119,80 @@ Round 3      New parties collect all pub shares.
 
 ---
 
-## lifecycle.qnt -- Node Orchestration (not yet implemented)
+## cluster.qnt -- System-Wide View
+
+Derived from `docs/DESIGN-RESHARE-HARDENING.md` invariants I1–I9. Models a multi-node reshare lifecycle where per-key state is distributed across nodes. This is the spec for reasoning about the hardening-doc invariants, which are fundamentally about cross-node agreement.
+
+### What it models
+
+- Multi-node view: each node has its own local state (`seenMembers`, `jobActive`, `shares`, `role`)
+- Canonical chain state separate from node views (I9)
+- Per-key share state across nodes with a **pending → committed** distinction (I2)
+- Atomic commit across all new-committee members via action preconditions (I1)
+- Leader election + crash + recovery (I7)
+- Nondeterministic partial-failure outcomes for reshare attempts (`AttemptAllSucceed`, `AttemptPartialFail(set)`, `AttemptAllFail`)
+- Job-view matching: a node participates in an attempt only if its local job view matches the leader's (models the coord handler's ACK/NACK behavior)
+
+### Per-node per-key share state
+
+Five distinct situations a node can be in for a given key:
+
+| State | Meaning |
+|-------|---------|
+| `NoShare` | Never held a share (or old-only after sentinel drop) |
+| `OldShare` | Has the committed share from a previous reshare |
+| `OldAndPending` | Both-committee node mid-reshare: has old + uncommitted new |
+| `OnlyPending` | New-only node mid-reshare: has only uncommitted new |
+| `NewCommitted` | Has only the new committed share (post-verification) |
+
+### Reshare attempt outcomes
+
+A reshare attempt is a single action with a nondeterministic outcome:
+
+| Outcome | Effect |
+|---------|--------|
+| `AttemptAllSucceed` | Every eligible new-committee member advances to pending |
+| `AttemptPartialFail(set)` | Named nodes fail (stay pre-reshare), others advance to pending |
+| `AttemptAllFail` | No node advances; attempt can be retried |
+
+The step function explores all three outcomes, letting the model check that partial-failure states cannot result in data loss or inconsistent commits.
+
+### Safety invariants
+
+| Invariant | Property | Hardening doc |
+|-----------|----------|---------------|
+| `ownViewConsistent` | Within a node's view of its job, no partial commit: if one same-view node is NewCommitted, all are | I1 (state-level sanity) |
+| `oldSharesRetained` | No initial-committee node has NoShare for a key unless a commit has happened for it | I2 |
+| `singleLeader` | At most one live node holds the `Leader` role at a time | I6 |
+| `jobTracesToChain` | Every active job's committee diff traces back to a chain event | I9 |
+| `exclusiveShareStates` | No node holds pending and committed simultaneously | structural |
+
+I1 atomicity is also enforced at the **action level** by `commitKey`'s precondition: every new-committee member must be alive, have a matching job view, and hold a pending share for the key. This means commit is a group-atomic transition — no partial commits are reachable by construction.
+
+The `leaderPossible` check (I7 precondition) is **not** in the safety bundle because crashes of all old∩new intersection members can violate it — that's a system-level failure requiring operator intervention, not a protocol bug. It's preserved as an auxiliary check.
+
+### Witnesses (reachability)
+
+| Witness | Verifies |
+|---------|----------|
+| `neverJobActive` | Nodes can enter an active job state |
+| `neverFullyCommitted` | Keys can progress to NewCommitted across the new committee |
+| `neverBackToIdleWithNewShares` | Jobs can complete and return to idle with new shares |
+| `neverPartialPending` | Partial-failure (some pending, some not) is reachable |
+| `neverLeaderElected` | Leader election fires |
+
+All witnesses are reachable at depth 80 with 5000 samples.
+
+### Results
+
+```
+quint run cluster.qnt --main=cluster --max-steps=100 --max-samples=10000 --invariant=safety
+[ok] No violation found
+```
+
+---
+
+## lifecycle.qnt -- Node Orchestration (single-node view)
 
 Derived from `docs/DESIGN-RESHARE.md` sections 4-8. Models the per-group state machine that manages reshare jobs triggered by on-chain membership changes. This spec is ahead of the implementation.
 
@@ -174,6 +256,7 @@ ACTIVE --- chain event (add/remove) --> RESHARING
 ## Running
 
 ```bash
+quint typecheck cluster.qnt
 quint typecheck reshare.qnt
 quint typecheck lifecycle.qnt
 
@@ -181,14 +264,17 @@ quint test test.qnt --main=reshare_test
 quint test test.qnt --main=lifecycle_test
 
 # Simulation with safety invariants
+quint run cluster.qnt --main=cluster --max-steps=100 --max-samples=10000 --invariant=safety
 quint run reshare.qnt --max-steps=30 --max-samples=500 --invariant=safety
 quint run lifecycle.qnt --max-steps=30 --max-samples=500 --invariant=safety
 
 # Witnesses (should find violations, confirming reachability)
+quint run cluster.qnt --main=cluster --max-steps=80 --max-samples=5000 --invariant=neverFullyCommitted
 quint run reshare.qnt --max-steps=30 --invariant=allPartiesNotDone
 quint run lifecycle.qnt --max-steps=20 --invariant=neverResharing
 
 # Exhaustive model checking (requires apalache-mc)
+quint verify cluster.qnt --invariant=safety
 quint verify reshare.qnt --invariant=safety
 quint verify lifecycle.qnt --invariant=safety
 ```
@@ -196,8 +282,8 @@ quint verify lifecycle.qnt --invariant=safety
 ## Possible extensions
 
 - **Byzantine behavior** -- Model equivocation or wrong group key to test safety under adversarial conditions.
-- **Dual coordinator** -- Model two nodes both calling `POST /v1/reshare` and the NACK-and-skip resolution.
-- **Multi-node view** -- Model multiple nodes with independent lifecycle state to verify convergence.
+- **Completion verification broadcast** -- Model the `msgReshareComplete` broadcast and its failure modes (currently fire-and-forget in the implementation).
+- **Atomic swap** -- Model the `swapNode(old, new)` event type from the hardening doc's atomic-swap section.
 - **Network faults** -- Add message loss or reordering to verify liveness properties.
-- **Node restart recovery** -- Model crash + restart with resume from bbolt progress.
-- **Concurrency enforcement** -- Model the semaphore cap and verify keys-in-flight bounds.
+- **Coordinator election protocol** -- Model an explicit leader election algorithm rather than the current "first-to-claim" semantics.
+- **Generation tracking** -- Add per-key generation numbers to enable finer-grained atomicity checks across historical commits.
