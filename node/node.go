@@ -281,10 +281,26 @@ func (n *Node) Start() error {
 	return nil
 }
 
-// Stop gracefully shuts down the HTTP server, the libp2p host, the worker pool,
-// and the key shard store.
+// Stop gracefully shuts down the node. The shutdown order is critical:
+//  1. Cancel the node context so in-flight goroutines (reshare, coord handlers)
+//     observe the cancellation and stop issuing new work.
+//  2. Brief drain period for goroutines to finish bbolt writes.
+//  3. Stop the chain poller and HTTP server.
+//  4. Close the libp2p host (tears down streams).
+//  5. Close the key manager (closes bbolt stores).
+//
+// Cancelling the context before closing the host and stores prevents goroutines
+// from writing to closed bbolt databases, which would panic or corrupt data.
 func (n *Node) Stop() error {
 	n.log.Info("stopping node")
+
+	// Step 1: cancel context so all goroutines begin winding down.
+	n.cancel()
+
+	// Step 2: brief drain for in-flight bbolt writes to complete.
+	time.Sleep(500 * time.Millisecond)
+
+	// Step 3: stop chain poller and HTTP server.
 	if n.chain != nil {
 		n.chain.close()
 	}
@@ -293,11 +309,15 @@ func (n *Node) Stop() error {
 	if err := n.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
+
+	// Step 4: close libp2p host.
 	n.host.Close()
+
+	// Step 5: close key manager (bbolt stores).
 	if err := n.km.Close(); err != nil {
 		n.log.Warn("close key manager", zap.Error(err))
 	}
-	n.cancel()
+
 	n.log.Info("node stopped")
 	return nil
 }

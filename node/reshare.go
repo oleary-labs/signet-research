@@ -252,6 +252,28 @@ func (n *Node) runReshareSession(ctx context.Context, groupID, keyID string) (er
 		return fmt.Errorf("broadcast coord: %w", err)
 	}
 
+	// If this key was already committed in a previous partial session (e.g.
+	// coordinator committed locally but some participants missed the commit
+	// broadcast), roll back to the pre-reshare generation so all parties
+	// enter the protocol with consistent state. Participants do this same
+	// rollback in the coord handler (msgReshare case).
+	done, _ := n.reshareStore.IsKeyDone(groupID, keyID)
+	if done {
+		if lkm, ok := n.km.(*LocalKeyManager); ok {
+			if cfg, err := lkm.loadConfig(groupID, keyID); err == nil && cfg != nil && cfg.Generation > 0 {
+				targetGen := cfg.Generation - 1
+				if err := n.km.RollbackReshare(groupID, keyID, targetGen); err != nil {
+					return fmt.Errorf("coordinator self-rollback to gen %d: %w", targetGen, err)
+				}
+				n.log.Warn("reshare: coordinator rolled back previously committed key",
+					zap.String("group_id", groupID),
+					zap.String("key_id", keyID),
+					zap.Uint64("restored_generation", targetGen))
+			}
+		}
+		n.reshareStore.DeleteKeyDone(groupID, keyID)
+	}
+
 	// Discard any stale pending from a previous failed attempt.
 	n.km.DiscardPendingReshare(groupID, keyID)
 
