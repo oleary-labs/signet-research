@@ -62,7 +62,7 @@ interface ISignetFactory {
 
     /// @notice Deploy a new SignetGroup via the beacon proxy.
     /// @param nodeAddrs            Initial set of node addresses.
-    /// @param threshold            Maximum tolerated corruptions (quorum = threshold + 1).
+    /// @param threshold            Minimum number of honest signers required (quorum).
     /// @param removalDelay         Seconds delay before a queued node removal can execute.
     /// @param issuerAddDelay       Seconds delay before a queued issuer addition can execute.
     /// @param issuerRemovalDelay   Seconds delay before a queued issuer removal can execute.

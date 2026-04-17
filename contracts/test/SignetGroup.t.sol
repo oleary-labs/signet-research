@@ -60,10 +60,10 @@ contract SignetGroupTest is PubkeyHelpersGroup {
     ISignetGroup.InitialIssuer[] internal _noIssuers;
     bytes[] internal _noAuthKeys;
 
-    /// @dev Creates a group with the given set; threshold=1, 1-day delays; manager=this.manager.
+    /// @dev Creates a group with the given set; threshold=2, 1-day delays; manager=this.manager.
     function _createGroup(address[] memory addrs) internal returns (ISignetGroup) {
         vm.prank(manager);
-        address g = factory.createGroup(addrs, 1, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
+        address g = factory.createGroup(addrs, 2, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
         return ISignetGroup(g);
     }
 
@@ -334,11 +334,11 @@ contract SignetGroupTest is PubkeyHelpersGroup {
     // -------------------------------------------------------------------------
 
     function testIsOperational() public {
-        // threshold=1 → quorum=2; start with 3 → operational
+        // threshold=2 → quorum=2; start with 3 → operational
         ISignetGroup g = _threeNodeGroup();
         assertTrue(g.isOperational());
 
-        // Remove two nodes → 1 active < 2 quorum → not operational
+        // Remove two nodes → 1 active < 2 threshold → not operational
         vm.prank(manager); g.queueRemoval(node1);
         vm.prank(manager); g.queueRemoval(node2);
         vm.warp(block.timestamp + 1 days);
@@ -369,7 +369,7 @@ contract SignetGroupTest is PubkeyHelpersGroup {
 
     function testQuorum() public {
         ISignetGroup g = _threeNodeGroup();
-        assertEq(g.quorum(), 2);  // threshold=1 → quorum=2
+        assertEq(g.quorum(), 2);  // threshold=2 → quorum=2
     }
 
     // -------------------------------------------------------------------------

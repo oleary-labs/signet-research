@@ -123,7 +123,7 @@ contract SignetFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable, IS
         bytes[] calldata initialAuthKeys
     ) external returns (address group) {
         require(removalDelay >= MIN_REMOVAL_DELAY, "removal delay too short");
-        require(nodeAddrs.length > threshold, "threshold too high for node count");
+        require(threshold > 0 && threshold <= nodeAddrs.length, "invalid threshold for node count");
 
         // Two-step deploy: set isGroup BEFORE calling initialize so that
         // nodeActivated callbacks (triggered inside _addToActive during initialize)

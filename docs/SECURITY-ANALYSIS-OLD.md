@@ -149,7 +149,7 @@ A compromised or malicious initiator could:
 | **10MB message limit** | `network/host.go` caps messages at 10MB, which is adequate but could still allow memory pressure with many concurrent sessions. |
 | **No request body size limit** | HTTP handlers use `json.NewDecoder(r.Body)` without `http.MaxBytesReader`, allowing arbitrarily large POST bodies. |
 | **JWKS cache lifetime** | 1-hour minimum refresh interval means a compromised JWKS key remains trusted for up to 1 hour after rotation. |
-| **No `threshold` validation on node removal** | `SignetGroup.executeRemoval` doesn't check if removing the node would drop the active set below `threshold + 1` (quorum). |
+| **No `threshold` validation on node removal** | `SignetGroup.executeRemoval` doesn't check if removing the node would drop the active set below `threshold` (quorum). |
 
 ---
 

@@ -60,10 +60,10 @@ contract SignetGroup is Initializable, ISignetGroup {
     mapping(bytes32 => uint256) internal _pendingAuthKeyRemovals; // executeAfter timestamp
 
     // -------------------------------------------------------------------------
-    // Upgrade-safe storage gap  (50 original − 14 new vars = 36)
+    // Upgrade-safe storage gap
     // -------------------------------------------------------------------------
 
-    uint256[36] private __gap;
+    uint256[50] private __gap;
 
     // -------------------------------------------------------------------------
     // Initializer
@@ -417,12 +417,12 @@ contract SignetGroup is Initializable, ISignetGroup {
 
     /// @inheritdoc ISignetGroup
     function quorum() external view returns (uint256) {
-        return threshold + 1;
+        return threshold;
     }
 
     /// @inheritdoc ISignetGroup
     function isOperational() external view returns (bool) {
-        return _activeNodes.length >= threshold + 1;
+        return _activeNodes.length >= threshold;
     }
 
     /// @inheritdoc ISignetGroup

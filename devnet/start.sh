@@ -167,7 +167,7 @@ for i in 1 2 3; do
 done
 
 # --------------------------------------------------------------------------
-# 6. Create a signing group with all three nodes (threshold=1, 2-of-3)
+# 6. Create a signing group with all three nodes (threshold=2, 2-of-3)
 # --------------------------------------------------------------------------
 info "Creating signing group..."
 

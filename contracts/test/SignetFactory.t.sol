@@ -206,9 +206,9 @@ contract SignetFactoryTest is PubkeyHelpers {
         address[] memory addrs = new address[](3);
         addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
 
-        // threshold=3, length=3 → need length > threshold → should revert
-        vm.expectRevert("threshold too high for node count");
-        factory.createGroup(addrs, 3, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
+        // threshold=4, length=3 → need threshold <= length → should revert
+        vm.expectRevert("invalid threshold for node count");
+        factory.createGroup(addrs, 4, 1 days, 1 days, 1 days, _noIssuers, 1 days, 1 days, _noAuthKeys);
     }
 
     function testCreateGroup_UnregisteredNode() public {

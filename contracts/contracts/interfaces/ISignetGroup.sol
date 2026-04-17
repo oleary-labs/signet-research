@@ -175,10 +175,10 @@ interface ISignetGroup {
     function getPendingNodes() external view returns (address[] memory);
     function getPendingRemovals() external view returns (address[] memory);
 
-    /// @notice Returns threshold + 1.
+    /// @notice Returns threshold (minimum honest signers required).
     function quorum() external view returns (uint256);
 
-    /// @notice True when active node count >= quorum().
+    /// @notice True when active node count >= threshold.
     function isOperational() external view returns (bool);
 
     // -------------------------------------------------------------------------
