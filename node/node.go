@@ -1000,37 +1000,42 @@ func (n *Node) validateSessionRequest(
 		return nil, "", &httpErr{http.StatusUnauthorized, "session expired; re-authenticate"}
 	}
 
-	// Derive key_id with a namespace prefix so OAuth and auth key paths can
-	// never collide. The prefix is internal — clients don't see or supply it.
-	var resolvedKeyID string
+	// Derive the logical key_id (what the client signs over).
+	var logicalKeyID string
 	if info.Identity != "" {
-		// Auth key certificate session: "authkey:<identity>" or "authkey:<identity>:<suffix>"
-		resolvedKeyID = "authkey:" + info.Identity
+		logicalKeyID = info.Identity
 		if keySuffix != "" {
-			resolvedKeyID = "authkey:" + info.Identity + ":" + keySuffix
+			logicalKeyID = info.Identity + ":" + keySuffix
 		}
 	} else {
-		// OAuth session: "oauth:<iss>:<sub>" or "oauth:<iss>:<sub>:<suffix>"
-		resolvedKeyID = "oauth:" + info.Iss + ":" + info.Sub
+		logicalKeyID = info.Iss + ":" + info.Sub
 		if keySuffix != "" {
-			resolvedKeyID = "oauth:" + info.Iss + ":" + info.Sub + ":" + keySuffix
+			logicalKeyID = info.Iss + ":" + info.Sub + ":" + keySuffix
 		}
 	}
 
-	// Verify request signature. The signature must cover the resolved keyID
-	// (derived from sub), not a client-supplied keyID.
+	// Verify request signature against the logical key_id (no namespace prefix).
 	n.log.Debug("validateSessionRequest",
 		zap.String("group_id", groupID),
-		zap.String("resolved_key_id", resolvedKeyID),
+		zap.String("logical_key_id", logicalKeyID),
 		zap.String("nonce", nonce),
 		zap.Uint64("timestamp", timestamp),
 		zap.Int("message_hash_len", len(messageHash)))
 	if err := verifyRequestSignature(
 		sessionPubBytes, reqSigBytes,
-		groupID, resolvedKeyID, nonce, timestamp,
+		groupID, logicalKeyID, nonce, timestamp,
 		messageHash,
 	); err != nil {
 		return nil, "", &httpErr{http.StatusUnauthorized, "invalid request signature: " + err.Error()}
+	}
+
+	// Add namespace prefix after signature verification. The prefix is internal
+	// — clients never see it — and prevents cross-path key_id collisions.
+	var resolvedKeyID string
+	if info.Identity != "" {
+		resolvedKeyID = "authkey:" + logicalKeyID
+	} else {
+		resolvedKeyID = "oauth:" + logicalKeyID
 	}
 
 	// Check nonce uniqueness.
@@ -1061,6 +1066,18 @@ func (n *Node) validateSessionRequest(
 		Identity:      info.Identity,
 	}
 	return ap, resolvedKeyID, nil
+}
+
+// stripKeyNamespace removes the internal "oauth:" or "authkey:" prefix from a
+// resolved key_id, returning the logical key_id that clients sign over.
+func stripKeyNamespace(keyID string) string {
+	if after, ok := strings.CutPrefix(keyID, "oauth:"); ok {
+		return after
+	}
+	if after, ok := strings.CutPrefix(keyID, "authkey:"); ok {
+		return after
+	}
+	return keyID
 }
 
 // handleStartReshare handles POST /v1/reshare. Creates a same-committee

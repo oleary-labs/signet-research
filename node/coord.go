@@ -131,14 +131,16 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				zap.Error(err))
 			return
 		}
-		// Verify request signature against session public key.
+		// Verify request signature against the logical key_id (strip the
+		// internal namespace prefix since clients sign the un-prefixed key_id).
+		logicalKeyID := stripKeyNamespace(msg.KeyID)
 		var msgHash []byte
 		if msg.Type == msgSign {
 			msgHash = msg.MessageHash
 		}
 		if err := verifyRequestSignature(
 			msg.Auth.SessionPub, msg.Auth.RequestSig,
-			msg.GroupID, msg.KeyID, msg.Auth.Nonce, msg.Auth.Timestamp,
+			msg.GroupID, logicalKeyID, msg.Auth.Nonce, msg.Auth.Timestamp,
 			msgHash,
 		); err != nil {
 			n.log.Warn("coord: invalid request signature",
