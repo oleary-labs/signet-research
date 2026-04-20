@@ -27,7 +27,69 @@ const (
 	AuthKeySchemeECDSA byte = 0x00
 	// AuthKeySchemeSchnorr is the prefix byte for FROST-compatible secp256k1 Schnorr auth keys.
 	AuthKeySchemeSchnorr byte = 0x01
+
+	// adminAuthWindow is the maximum age (or future drift) of an admin request
+	// timestamp before it is rejected.
+	adminAuthWindow = 30 * time.Second
 )
+
+// AdminAuth holds the fields for stateless admin endpoint authentication.
+// The auth key signs SHA256(group_id : nonce : timestamp_BE).
+type AdminAuth struct {
+	GroupID    string `json:"group_id"`
+	AuthKeyPub string `json:"auth_key_pub"` // hex, 34-byte scheme-prefixed key
+	Signature  string `json:"signature"`    // hex, 64 bytes (ECDSA) or 65 bytes (Schnorr)
+	Nonce      string `json:"nonce"`
+	Timestamp  uint64 `json:"timestamp"`
+}
+
+// adminAuthHash builds the canonical hash for admin endpoint authentication.
+func adminAuthHash(groupID, nonce string, timestamp uint64) [32]byte {
+	h := sha256.New()
+	h.Write([]byte(groupID))
+	h.Write([]byte(":"))
+	h.Write([]byte(nonce))
+	h.Write([]byte(":"))
+	var ts [8]byte
+	binary.BigEndian.PutUint64(ts[:], timestamp)
+	h.Write(ts[:])
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out
+}
+
+// ValidateAdminAuth verifies a stateless admin auth request: checks the auth
+// key is trusted for the group, the timestamp is fresh, and the signature is
+// valid. Returns an error describing the failure, or nil on success.
+func (g *GroupAuth) ValidateAdminAuth(groupID string, auth *AdminAuth) error {
+	if auth.Timestamp == 0 {
+		return fmt.Errorf("timestamp is required")
+	}
+	ts := time.Unix(int64(auth.Timestamp), 0)
+	if time.Since(ts).Abs() > adminAuthWindow {
+		return fmt.Errorf("timestamp too old or in the future")
+	}
+
+	authKeyBytes, err := hex.DecodeString(strings.TrimPrefix(auth.AuthKeyPub, "0x"))
+	if err != nil || len(authKeyBytes) != 34 {
+		return fmt.Errorf("invalid auth_key_pub: must be 34 hex-encoded bytes")
+	}
+
+	if !g.IsAuthKeyTrusted(groupID, authKeyBytes) {
+		return fmt.Errorf("untrusted authorization key")
+	}
+
+	sigBytes, err := hex.DecodeString(strings.TrimPrefix(auth.Signature, "0x"))
+	if err != nil {
+		return fmt.Errorf("invalid signature hex")
+	}
+
+	scheme := authKeyBytes[0]
+	pubkey := authKeyBytes[1:]
+	hash := adminAuthHash(groupID, auth.Nonce, auth.Timestamp)
+
+	return verifyAuthKeySignature(scheme, pubkey, hash[:], sigBytes)
+}
 
 // IssuerInfo is an in-memory copy of an on-chain OAuthIssuer plus the JWKS URI
 // resolved via OpenID Connect discovery.

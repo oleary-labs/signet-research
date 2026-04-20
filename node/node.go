@@ -259,12 +259,13 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", n.handleHealth)
 	mux.HandleFunc("GET /v1/info", n.handleInfo)
-	mux.HandleFunc("GET /v1/keys", n.handleListKeys)
 	mux.HandleFunc("POST /v1/auth", n.handleAuth)
 	mux.HandleFunc("POST /v1/keygen", n.handleKeygen)
 	mux.HandleFunc("POST /v1/sign", n.handleSign)
-	mux.HandleFunc("POST /v1/reshare", n.handleStartReshare)
-	mux.HandleFunc("GET /v1/reshare/{group_id}", n.handleReshareStatus)
+
+	mux.HandleFunc("POST /admin/keys", n.handleListKeys)
+	mux.HandleFunc("POST /admin/reshare", n.handleStartReshare)
+	mux.HandleFunc("POST /admin/reshare/status", n.handleReshareStatus)
 	n.server = &http.Server{Addr: cfg.APIAddr, Handler: mux}
 
 	return n, nil
@@ -417,59 +418,65 @@ func (n *Node) handleInfo(w http.ResponseWriter, r *http.Request) {
 
 // handleListKeys returns public metadata for all persisted key shards.
 //
-// GET /v1/keys                       — all groups and their keys
-// GET /v1/keys?group_id=0xGroupAddr  — keys for a specific group
+// POST /admin/keys — list keys for a group. Requires admin auth (auth key signature).
 func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	type keyEntry struct {
 		GroupID         string   `json:"group_id"`
 		KeyID           string   `json:"key_id"`
+		PublicKey       string   `json:"public_key"`
 		EthereumAddress string   `json:"ethereum_address"`
 		Threshold       int      `json:"threshold"`
 		Parties         []string `json:"parties"`
 	}
 
-	filterGroup := r.URL.Query().Get("group_id")
+	var req AdminAuth
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "decode body: "+err.Error())
+		return
+	}
+	req.GroupID = strings.ToLower(req.GroupID)
+	if req.GroupID == "" {
+		httpError(w, http.StatusBadRequest, "group_id is required")
+		return
+	}
 
-	var groupIDs []string
-	if filterGroup != "" {
-		groupIDs = []string{filterGroup}
-	} else {
-		var err error
-		groupIDs, err = n.km.ListGroups()
-		if err != nil {
-			httpError(w, http.StatusInternalServerError, "list groups: "+err.Error())
-			return
-		}
+	if err := n.auth.ValidateAdminAuth(req.GroupID, &req); err != nil {
+		httpError(w, http.StatusUnauthorized, "admin auth failed: "+err.Error())
+		return
+	}
+
+	keyIDs, err := n.km.ListKeys(req.GroupID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "list keys: "+err.Error())
+		return
 	}
 
 	entries := make([]keyEntry, 0)
-	for _, gid := range groupIDs {
-		keyIDs, err := n.km.ListKeys(gid)
-		if err != nil {
-			httpError(w, http.StatusInternalServerError, "list keys: "+err.Error())
-			return
+	for _, kid := range keyIDs {
+		info, err := n.km.GetKeyInfo(req.GroupID, kid)
+		if err != nil || info == nil {
+			continue
 		}
-		for _, kid := range keyIDs {
-			info, err := n.km.GetKeyInfo(gid, kid)
-			if err != nil || info == nil {
-				continue
-			}
-			ethAddr := ""
+		pubKeyHex := ""
+		ethAddr := ""
+		if len(info.GroupKey) > 0 {
+			pubKeyHex = "0x" + hex.EncodeToString(info.GroupKey)
 			if addr, err := network.EthereumAddressFromGroupKey(info.GroupKey); err == nil {
 				ethAddr = "0x" + hex.EncodeToString(addr[:])
 			}
-			parties := make([]string, len(info.Parties))
-			for i, p := range info.Parties {
-				parties[i] = string(p)
-			}
-			entries = append(entries, keyEntry{
-				GroupID:         gid,
-				KeyID:           kid,
-				EthereumAddress: ethAddr,
-				Threshold:       info.Threshold,
-				Parties:         parties,
-			})
 		}
+		parties := make([]string, len(info.Parties))
+		for i, p := range info.Parties {
+			parties[i] = string(p)
+		}
+		entries = append(entries, keyEntry{
+			GroupID:         req.GroupID,
+			KeyID:           kid,
+			PublicKey:       pubKeyHex,
+			EthereumAddress: ethAddr,
+			Threshold:       info.Threshold,
+			Parties:         parties,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1080,14 +1087,12 @@ func stripKeyNamespace(keyID string) string {
 	return keyID
 }
 
-// handleStartReshare handles POST /v1/reshare. Creates a same-committee
-// reshare job (key refresh) and starts the coordinator. This redistributes
-// shares among the same parties without changing membership — cryptographically
-// equivalent to a membership-change reshare.
+// handleStartReshare handles POST /admin/reshare. Creates a same-committee
+// reshare job (key refresh) and starts the coordinator. Requires admin auth.
 func (n *Node) handleStartReshare(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		GroupID     string `json:"group_id"`
-		Concurrency int    `json:"concurrency"`
+		AdminAuth
+		Concurrency int `json:"concurrency"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -1096,6 +1101,12 @@ func (n *Node) handleStartReshare(w http.ResponseWriter, r *http.Request) {
 	groupID := strings.ToLower(req.GroupID)
 	if groupID == "" {
 		httpError(w, http.StatusBadRequest, "group_id is required")
+		return
+	}
+	req.AdminAuth.GroupID = groupID
+
+	if err := n.auth.ValidateAdminAuth(groupID, &req.AdminAuth); err != nil {
+		httpError(w, http.StatusUnauthorized, "admin auth failed: "+err.Error())
 		return
 	}
 	concurrency := req.Concurrency
@@ -1148,12 +1159,22 @@ func (n *Node) handleStartReshare(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleReshareStatus handles GET /v1/reshare/{group_id}. Returns current
-// reshare status for a group.
+// handleReshareStatus handles POST /admin/reshare/status. Returns current
+// reshare status for a group. Requires admin auth.
 func (n *Node) handleReshareStatus(w http.ResponseWriter, r *http.Request) {
-	groupID := strings.ToLower(r.PathValue("group_id"))
+	var req AdminAuth
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "decode body: "+err.Error())
+		return
+	}
+	groupID := strings.ToLower(req.GroupID)
 	if groupID == "" {
 		httpError(w, http.StatusBadRequest, "group_id is required")
+		return
+	}
+
+	if err := n.auth.ValidateAdminAuth(groupID, &req); err != nil {
+		httpError(w, http.StatusUnauthorized, "admin auth failed: "+err.Error())
 		return
 	}
 
