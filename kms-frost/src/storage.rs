@@ -74,7 +74,7 @@ impl Storage {
         }
     }
 
-    /// List all key IDs for a group.
+    /// List all key IDs for a group (excludes internal pending/ and archive/ prefixed keys).
     pub fn list_keys(&self, group_id: &str) -> Result<Vec<String>, String> {
         let tree = self
             .db
@@ -84,9 +84,70 @@ impl Storage {
         for entry in tree.iter() {
             let (key, _) = entry.map_err(|e| format!("iter: {e}"))?;
             let id = String::from_utf8(key.to_vec()).map_err(|e| format!("key utf8: {e}"))?;
-            ids.push(id);
+            if !id.starts_with("pending/") && !id.starts_with("archive/") {
+                ids.push(id);
+            }
         }
         Ok(ids)
+    }
+
+    /// Promote a pending reshare result to active, archiving the previous active key.
+    /// Returns the new generation number.
+    pub fn commit_reshare(&self, group_id: &str, key_id: &str) -> Result<u64, String> {
+        let pending_id = format!("pending/{key_id}");
+        let pending = self
+            .get_key(group_id, &pending_id)?
+            .ok_or_else(|| format!("no pending reshare for {group_id}/{key_id}"))?;
+
+        // Archive the current active key (if it exists).
+        if let Some(active) = self.get_key(group_id, key_id)? {
+            let archive_id = format!("archive/{key_id}/gen{}", active.generation);
+            self.put_key(group_id, &archive_id, &active)?;
+        }
+
+        // Promote pending to active.
+        let generation = pending.generation;
+        self.put_key(group_id, key_id, &pending)?;
+
+        // Remove pending.
+        self.delete_key(group_id, &pending_id)?;
+
+        Ok(generation)
+    }
+
+    /// Discard a pending reshare result without promoting.
+    pub fn discard_pending_reshare(&self, group_id: &str, key_id: &str) -> Result<(), String> {
+        let pending_id = format!("pending/{key_id}");
+        self.delete_key(group_id, &pending_id)
+    }
+
+    /// Rollback: restore a specific archived generation as the active key.
+    pub fn rollback_reshare(&self, group_id: &str, key_id: &str, generation: u64) -> Result<(), String> {
+        let archive_id = format!("archive/{key_id}/gen{generation}");
+        let archived = self
+            .get_key(group_id, &archive_id)?
+            .ok_or_else(|| format!("no archived key at generation {generation} for {group_id}/{key_id}"))?;
+
+        // Replace active with archived version.
+        self.put_key(group_id, key_id, &archived)?;
+
+        // Clean up: remove any pending key.
+        let pending_id = format!("pending/{key_id}");
+        let _ = self.delete_key(group_id, &pending_id);
+
+        Ok(())
+    }
+
+    /// Delete a key by (group_id, key_id).
+    fn delete_key(&self, group_id: &str, key_id: &str) -> Result<(), String> {
+        let tree = self
+            .db
+            .open_tree(Self::tree_name(group_id))
+            .map_err(|e| format!("open tree: {e}"))?;
+        tree.remove(key_id.as_bytes())
+            .map_err(|e| format!("delete key: {e}"))?;
+        tree.flush().map_err(|e| format!("flush: {e}"))?;
+        Ok(())
     }
 }
 

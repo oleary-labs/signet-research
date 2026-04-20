@@ -92,7 +92,7 @@ func TestRemoteKeyManager_Connection(t *testing.T) {
 		t.Fatalf("AbortSession: %v", err)
 	}
 
-	// Reshare returns Unimplemented.
+	// Reshare with incomplete params returns InvalidArgument (not Unimplemented — it's wired up now).
 	params, _ := cbor.Marshal(map[string]interface{}{"group_id": "g1"})
 	_, err = rkm.client.StartSession(ctx, &kmspb.StartSessionRequest{
 		SessionId: "reshare-test",
@@ -100,10 +100,10 @@ func TestRemoteKeyManager_Connection(t *testing.T) {
 		Params:    params,
 	})
 	if err == nil {
-		t.Fatal("expected error for reshare")
+		t.Fatal("expected error for reshare with incomplete params")
 	}
-	if s, ok := status.FromError(err); !ok || s.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented for reshare, got: %v", err)
+	if s, ok := status.FromError(err); !ok || s.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for reshare with bad params, got: %v", err)
 	}
 
 	t.Log("KMS connection tests passed")

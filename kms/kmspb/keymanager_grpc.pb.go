@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.1
 // - protoc             v7.34.1
-// source: keymanager.proto
+// source: proto/keymanager.proto
 
 package kmspb
 
@@ -19,11 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	KeyManager_StartSession_FullMethodName   = "/signet.kms.v1.KeyManager/StartSession"
-	KeyManager_ProcessMessage_FullMethodName = "/signet.kms.v1.KeyManager/ProcessMessage"
-	KeyManager_AbortSession_FullMethodName   = "/signet.kms.v1.KeyManager/AbortSession"
-	KeyManager_GetPublicKey_FullMethodName   = "/signet.kms.v1.KeyManager/GetPublicKey"
-	KeyManager_ListKeys_FullMethodName       = "/signet.kms.v1.KeyManager/ListKeys"
+	KeyManager_StartSession_FullMethodName          = "/signet.kms.v1.KeyManager/StartSession"
+	KeyManager_ProcessMessage_FullMethodName        = "/signet.kms.v1.KeyManager/ProcessMessage"
+	KeyManager_AbortSession_FullMethodName          = "/signet.kms.v1.KeyManager/AbortSession"
+	KeyManager_CommitReshare_FullMethodName         = "/signet.kms.v1.KeyManager/CommitReshare"
+	KeyManager_DiscardPendingReshare_FullMethodName = "/signet.kms.v1.KeyManager/DiscardPendingReshare"
+	KeyManager_RollbackReshare_FullMethodName       = "/signet.kms.v1.KeyManager/RollbackReshare"
+	KeyManager_GetPublicKey_FullMethodName          = "/signet.kms.v1.KeyManager/GetPublicKey"
+	KeyManager_ListKeys_FullMethodName              = "/signet.kms.v1.KeyManager/ListKeys"
 )
 
 // KeyManagerClient is the client API for KeyManager service.
@@ -44,6 +47,13 @@ type KeyManagerClient interface {
 	ProcessMessage(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[SessionMessage, SessionMessage], error)
 	// AbortSession tears down a session, releasing all associated state.
 	AbortSession(ctx context.Context, in *AbortSessionRequest, opts ...grpc.CallOption) (*AbortSessionResponse, error)
+	// CommitReshare promotes a pending reshare result to active, archiving
+	// the previous active version.
+	CommitReshare(ctx context.Context, in *KeyRef, opts ...grpc.CallOption) (*CommitReshareResponse, error)
+	// DiscardPendingReshare removes a pending reshare result without promoting.
+	DiscardPendingReshare(ctx context.Context, in *KeyRef, opts ...grpc.CallOption) (*DiscardPendingReshareResponse, error)
+	// RollbackReshare restores a previous generation as the active key.
+	RollbackReshare(ctx context.Context, in *RollbackReshareRequest, opts ...grpc.CallOption) (*RollbackReshareResponse, error)
 	// GetPublicKey returns the group public key and this node's verifying share.
 	GetPublicKey(ctx context.Context, in *KeyRef, opts ...grpc.CallOption) (*PublicKeyResponse, error)
 	// ListKeys returns all key IDs stored for a group.
@@ -91,6 +101,36 @@ func (c *keyManagerClient) AbortSession(ctx context.Context, in *AbortSessionReq
 	return out, nil
 }
 
+func (c *keyManagerClient) CommitReshare(ctx context.Context, in *KeyRef, opts ...grpc.CallOption) (*CommitReshareResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommitReshareResponse)
+	err := c.cc.Invoke(ctx, KeyManager_CommitReshare_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *keyManagerClient) DiscardPendingReshare(ctx context.Context, in *KeyRef, opts ...grpc.CallOption) (*DiscardPendingReshareResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiscardPendingReshareResponse)
+	err := c.cc.Invoke(ctx, KeyManager_DiscardPendingReshare_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *keyManagerClient) RollbackReshare(ctx context.Context, in *RollbackReshareRequest, opts ...grpc.CallOption) (*RollbackReshareResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RollbackReshareResponse)
+	err := c.cc.Invoke(ctx, KeyManager_RollbackReshare_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *keyManagerClient) GetPublicKey(ctx context.Context, in *KeyRef, opts ...grpc.CallOption) (*PublicKeyResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PublicKeyResponse)
@@ -129,6 +169,13 @@ type KeyManagerServer interface {
 	ProcessMessage(grpc.BidiStreamingServer[SessionMessage, SessionMessage]) error
 	// AbortSession tears down a session, releasing all associated state.
 	AbortSession(context.Context, *AbortSessionRequest) (*AbortSessionResponse, error)
+	// CommitReshare promotes a pending reshare result to active, archiving
+	// the previous active version.
+	CommitReshare(context.Context, *KeyRef) (*CommitReshareResponse, error)
+	// DiscardPendingReshare removes a pending reshare result without promoting.
+	DiscardPendingReshare(context.Context, *KeyRef) (*DiscardPendingReshareResponse, error)
+	// RollbackReshare restores a previous generation as the active key.
+	RollbackReshare(context.Context, *RollbackReshareRequest) (*RollbackReshareResponse, error)
 	// GetPublicKey returns the group public key and this node's verifying share.
 	GetPublicKey(context.Context, *KeyRef) (*PublicKeyResponse, error)
 	// ListKeys returns all key IDs stored for a group.
@@ -151,6 +198,15 @@ func (UnimplementedKeyManagerServer) ProcessMessage(grpc.BidiStreamingServer[Ses
 }
 func (UnimplementedKeyManagerServer) AbortSession(context.Context, *AbortSessionRequest) (*AbortSessionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AbortSession not implemented")
+}
+func (UnimplementedKeyManagerServer) CommitReshare(context.Context, *KeyRef) (*CommitReshareResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CommitReshare not implemented")
+}
+func (UnimplementedKeyManagerServer) DiscardPendingReshare(context.Context, *KeyRef) (*DiscardPendingReshareResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DiscardPendingReshare not implemented")
+}
+func (UnimplementedKeyManagerServer) RollbackReshare(context.Context, *RollbackReshareRequest) (*RollbackReshareResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RollbackReshare not implemented")
 }
 func (UnimplementedKeyManagerServer) GetPublicKey(context.Context, *KeyRef) (*PublicKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetPublicKey not implemented")
@@ -222,6 +278,60 @@ func _KeyManager_AbortSession_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _KeyManager_CommitReshare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(KeyRef)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KeyManagerServer).CommitReshare(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KeyManager_CommitReshare_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KeyManagerServer).CommitReshare(ctx, req.(*KeyRef))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KeyManager_DiscardPendingReshare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(KeyRef)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KeyManagerServer).DiscardPendingReshare(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KeyManager_DiscardPendingReshare_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KeyManagerServer).DiscardPendingReshare(ctx, req.(*KeyRef))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KeyManager_RollbackReshare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RollbackReshareRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KeyManagerServer).RollbackReshare(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KeyManager_RollbackReshare_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KeyManagerServer).RollbackReshare(ctx, req.(*RollbackReshareRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _KeyManager_GetPublicKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(KeyRef)
 	if err := dec(in); err != nil {
@@ -274,6 +384,18 @@ var KeyManager_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _KeyManager_AbortSession_Handler,
 		},
 		{
+			MethodName: "CommitReshare",
+			Handler:    _KeyManager_CommitReshare_Handler,
+		},
+		{
+			MethodName: "DiscardPendingReshare",
+			Handler:    _KeyManager_DiscardPendingReshare_Handler,
+		},
+		{
+			MethodName: "RollbackReshare",
+			Handler:    _KeyManager_RollbackReshare_Handler,
+		},
+		{
 			MethodName: "GetPublicKey",
 			Handler:    _KeyManager_GetPublicKey_Handler,
 		},
@@ -290,5 +412,5 @@ var KeyManager_ServiceDesc = grpc.ServiceDesc{
 			ClientStreams: true,
 		},
 	},
-	Metadata: "keymanager.proto",
+	Metadata: "proto/keymanager.proto",
 }

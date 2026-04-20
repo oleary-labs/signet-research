@@ -23,6 +23,18 @@ service KeyManager {
   // AbortSession tears down a session, releasing all associated state.
   rpc AbortSession(AbortSessionRequest) returns (AbortSessionResponse);
 
+  // Reshare lifecycle --------------------------------------------------------
+
+  // CommitReshare promotes a pending reshare result to active, archiving
+  // the previous active version.
+  rpc CommitReshare(KeyRef) returns (CommitReshareResponse);
+
+  // DiscardPendingReshare removes a pending reshare result without promoting.
+  rpc DiscardPendingReshare(KeyRef) returns (DiscardPendingReshareResponse);
+
+  // RollbackReshare restores a previous generation as the active key.
+  rpc RollbackReshare(RollbackReshareRequest) returns (RollbackReshareResponse);
+
   // Key queries (no key material crosses the boundary) -----------------------
 
   // GetPublicKey returns the group public key and this node's verifying share.
@@ -137,3 +149,21 @@ message PublicKeyResponse {
 message KeyListResponse {
   repeated string key_ids = 1;
 }
+
+// ---------------------------------------------------------------------------
+// Reshare lifecycle
+// ---------------------------------------------------------------------------
+
+message CommitReshareResponse {
+  uint64 generation = 1; // the new active generation after commit
+}
+
+message DiscardPendingReshareResponse {}
+
+message RollbackReshareRequest {
+  bytes  group_id   = 1;
+  string key_id     = 2;
+  uint64 generation = 3; // target generation to restore
+}
+
+message RollbackReshareResponse {}

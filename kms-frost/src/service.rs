@@ -199,6 +199,56 @@ impl KeyManager for KmsService {
         Ok(Response::new(AbortSessionResponse {}))
     }
 
+    async fn commit_reshare(
+        &self,
+        request: Request<KeyRef>,
+    ) -> Result<Response<CommitReshareResponse>, Status> {
+        let req = request.into_inner();
+        let group_id = hex::encode(&req.group_id);
+        let key_id = &req.key_id;
+        info!(group_id = %group_id, key_id = %key_id, "commit_reshare");
+
+        let generation = self
+            .storage
+            .commit_reshare(&group_id, key_id)
+            .map_err(|e| Status::internal(e))?;
+
+        Ok(Response::new(CommitReshareResponse { generation }))
+    }
+
+    async fn discard_pending_reshare(
+        &self,
+        request: Request<KeyRef>,
+    ) -> Result<Response<DiscardPendingReshareResponse>, Status> {
+        let req = request.into_inner();
+        let group_id = hex::encode(&req.group_id);
+        let key_id = &req.key_id;
+        info!(group_id = %group_id, key_id = %key_id, "discard_pending_reshare");
+
+        self.storage
+            .discard_pending_reshare(&group_id, key_id)
+            .map_err(|e| Status::internal(e))?;
+
+        Ok(Response::new(DiscardPendingReshareResponse {}))
+    }
+
+    async fn rollback_reshare(
+        &self,
+        request: Request<RollbackReshareRequest>,
+    ) -> Result<Response<RollbackReshareResponse>, Status> {
+        let req = request.into_inner();
+        let group_id = hex::encode(&req.group_id);
+        let key_id = &req.key_id;
+        let generation = req.generation;
+        info!(group_id = %group_id, key_id = %key_id, generation = generation, "rollback_reshare");
+
+        self.storage
+            .rollback_reshare(&group_id, key_id, generation)
+            .map_err(|e| Status::internal(e))?;
+
+        Ok(Response::new(RollbackReshareResponse {}))
+    }
+
     async fn get_public_key(
         &self,
         request: Request<KeyRef>,

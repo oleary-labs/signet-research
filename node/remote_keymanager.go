@@ -116,26 +116,70 @@ func (rkm *RemoteKeyManager) RunSign(ctx context.Context, p SignParams) (*tss.Si
 	return &sig, nil
 }
 
-// RunReshare is not yet implemented in the Rust KMS. The protobuf schema
-// defines SESSION_TYPE_RESHARE = 3, but the KMS returns Unimplemented.
-// This stub will be replaced when the Rust KMS gains reshare support.
+// RunReshare starts a reshare session on the KMS and bridges messages.
 func (rkm *RemoteKeyManager) RunReshare(ctx context.Context, p ReshareParams) (*ReshareResult, error) {
-	return nil, fmt.Errorf("reshare not implemented in remote KMS")
+	params, err := encodeReshareParams(p)
+	if err != nil {
+		return nil, fmt.Errorf("encode reshare params: %w", err)
+	}
+	resp, err := rkm.client.StartSession(ctx, &kmspb.StartSessionRequest{
+		SessionId: p.SessionID,
+		Type:      kmspb.SessionType_SESSION_TYPE_RESHARE,
+		Params:    params,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("start reshare session: %w", err)
+	}
+
+	for _, out := range resp.Outgoing {
+		p.SN.Send(protoToTSSMessage(out))
+	}
+
+	result, err := rkm.bridgeSession(ctx, p.SessionID, p.SN)
+	if err != nil {
+		return nil, fmt.Errorf("reshare session: %w", err)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("reshare session: no result returned")
+	}
+
+	// If group_key is returned but no verifying_share, this is an old-only party.
+	oldOnly := len(result.VerifyingShare) == 0
+	return &ReshareResult{
+		OldOnly:    oldOnly,
+		Generation: 1, // TODO: parse from result when available
+	}, nil
 }
 
-// CommitReshare is a no-op stub — reshare not yet implemented in remote KMS.
+// CommitReshare promotes a pending reshare result to active in the KMS.
 func (rkm *RemoteKeyManager) CommitReshare(groupID, keyID string) error {
-	return nil
+	gid, _ := hex.DecodeString(strings.TrimPrefix(groupID, "0x"))
+	_, err := rkm.client.CommitReshare(context.Background(), &kmspb.KeyRef{
+		GroupId: gid,
+		KeyId:   keyID,
+	})
+	return err
 }
 
-// DiscardPendingReshare is a no-op stub.
+// DiscardPendingReshare removes a pending reshare result in the KMS.
 func (rkm *RemoteKeyManager) DiscardPendingReshare(groupID, keyID string) error {
-	return nil
+	gid, _ := hex.DecodeString(strings.TrimPrefix(groupID, "0x"))
+	_, err := rkm.client.DiscardPendingReshare(context.Background(), &kmspb.KeyRef{
+		GroupId: gid,
+		KeyId:   keyID,
+	})
+	return err
 }
 
-// RollbackReshare is a no-op stub.
+// RollbackReshare restores a previous generation as active in the KMS.
 func (rkm *RemoteKeyManager) RollbackReshare(groupID, keyID string, generation uint64) error {
-	return fmt.Errorf("reshare rollback not implemented in remote KMS")
+	gid, _ := hex.DecodeString(strings.TrimPrefix(groupID, "0x"))
+	_, err := rkm.client.RollbackReshare(context.Background(), &kmspb.RollbackReshareRequest{
+		GroupId:    gid,
+		KeyId:      keyID,
+		Generation: generation,
+	})
+	return err
 }
 
 // GetKeyInfo returns public metadata for a stored key.
@@ -325,6 +369,35 @@ func encodeSignParams(p SignParams) ([]byte, error) {
 		PartyID:     string(p.Host.Self()),
 		SignerIDs:   signerIDs,
 		MessageHash: p.MessageHash,
+	})
+}
+
+// kmsReshareParams is the CBOR wire format for reshare session params.
+type kmsReshareParams struct {
+	GroupID     string   `cbor:"group_id"`
+	KeyID       string   `cbor:"key_id"`
+	PartyID     string   `cbor:"party_id"`
+	OldPartyIDs []string `cbor:"old_party_ids"`
+	NewPartyIDs []string `cbor:"new_party_ids"`
+	NewThreshold int     `cbor:"new_threshold"`
+}
+
+func encodeReshareParams(p ReshareParams) ([]byte, error) {
+	oldIDs := make([]string, len(p.OldParties))
+	for i, pid := range p.OldParties {
+		oldIDs[i] = string(pid)
+	}
+	newIDs := make([]string, len(p.NewParties))
+	for i, pid := range p.NewParties {
+		newIDs[i] = string(pid)
+	}
+	return cbor.Marshal(&kmsReshareParams{
+		GroupID:      p.GroupID,
+		KeyID:        p.KeyID,
+		PartyID:      string(p.Host.Self()),
+		OldPartyIDs:  oldIDs,
+		NewPartyIDs:  newIDs,
+		NewThreshold: p.NewThreshold,
 	})
 }
 
