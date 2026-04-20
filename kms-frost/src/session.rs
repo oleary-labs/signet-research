@@ -9,9 +9,14 @@ use frost_secp256k1 as frost;
 use frost::keys::dkg;
 use frost::{Identifier, round1, round2};
 use rand::rngs::ThreadRng;
+use rand::RngCore;
 use tracing::debug;
 
 use crate::params::{KeygenParams, SignParams};
+use crate::reshare::{
+    self, decode_reshare_params, Polynomial, ReshareParams, ReshareR1Payload, ReshareR2Payload,
+    ReshareR3Payload,
+};
 use crate::storage::{Storage, StoredKey};
 
 /// A message the KMS wants to send to a peer (or broadcast).
@@ -85,6 +90,18 @@ impl PartyMap {
     }
 }
 
+/// CBOR-encode a serializable value.
+fn cbor_encode<T: serde::Serialize>(val: &T) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    ciborium::into_writer(val, &mut buf).map_err(|e| format!("cbor encode: {e}"))?;
+    Ok(buf)
+}
+
+/// CBOR-decode a deserializable value.
+fn cbor_decode<T: serde::de::DeserializeOwned>(data: &[u8]) -> Result<T, String> {
+    ciborium::from_reader(data).map_err(|e| format!("cbor decode: {e}"))
+}
+
 // ---------------------------------------------------------------------------
 // Session — wraps the inner state with a pending message buffer
 // ---------------------------------------------------------------------------
@@ -135,6 +152,17 @@ impl Session {
     ) -> Result<(Self, StepOutput), String> {
         let (inner, output) = SessionInner::start_sign(session_id, params, storage)?;
         debug!(state = inner.state_name(), "sign session started");
+        Ok((Session::new(inner), output))
+    }
+
+    /// Create and start a reshare session.
+    pub fn start_reshare(
+        session_id: &str,
+        params: ReshareParams,
+        storage: &Storage,
+    ) -> Result<(Self, StepOutput), String> {
+        let (inner, output) = SessionInner::start_reshare(session_id, params, storage)?;
+        debug!(state = inner.state_name(), "reshare session started");
         Ok((Session::new(inner), output))
     }
 
@@ -265,6 +293,65 @@ enum SessionInner {
         signing_package: frost::SigningPackage,
         shares: BTreeMap<Identifier, round2::SignatureShare>,
     },
+    /// Reshare round 1: old parties broadcast commitments; all collect.
+    ReshareR1 {
+        session_id: String,
+        params: ReshareParams,
+        is_old: bool,
+        is_new: bool,
+        /// Old party's polynomial (None for new-only parties).
+        polynomial: Option<Polynomial>,
+        chain_key: Option<Vec<u8>>,
+        /// Old party scalar IDs (for Lagrange).
+        old_scalars: Vec<k256::Scalar>,
+        /// New party scalar IDs.
+        new_scalars: Vec<k256::Scalar>,
+        /// This party's scalar in the old set.
+        self_old_scalar: Option<k256::Scalar>,
+        /// This party's scalar in the new set.
+        self_new_scalar: Option<k256::Scalar>,
+        /// Existing key share secret (old parties only).
+        old_secret: Option<k256::Scalar>,
+        /// Group key from stored config.
+        group_key: Vec<u8>,
+        generation: u64,
+        /// Collected R1 broadcasts from old parties.
+        r1_received: BTreeMap<String, ReshareR1Payload>,
+        broadcast_sent: bool,
+    },
+    /// Reshare round 2: new parties collect sub-shares from old parties.
+    ReshareR2 {
+        session_id: String,
+        params: ReshareParams,
+        is_old: bool,
+        is_new: bool,
+        polynomial: Option<Polynomial>,
+        old_scalars: Vec<k256::Scalar>,
+        new_scalars: Vec<k256::Scalar>,
+        self_new_scalar: Option<k256::Scalar>,
+        group_key: Vec<u8>,
+        generation: u64,
+        /// Decoded commitments from all old parties.
+        all_commitments: BTreeMap<String, Vec<k256::ProjectivePoint>>,
+        /// Chain keys from old parties (sorted by party_id for hashing).
+        chain_keys: Vec<(String, Vec<u8>)>,
+        /// Sub-shares received from old parties (new parties accumulate these).
+        sub_shares: BTreeMap<String, k256::Scalar>,
+    },
+    /// Reshare round 3: new parties exchange public key shares.
+    ReshareR3 {
+        session_id: String,
+        params: ReshareParams,
+        new_scalars: Vec<k256::Scalar>,
+        self_new_scalar: k256::Scalar,
+        group_key: Vec<u8>,
+        generation: u64,
+        /// This party's new secret share.
+        new_secret: k256::Scalar,
+        chain_keys: Vec<(String, Vec<u8>)>,
+        /// Collected verifying shares from new parties.
+        pub_shares: BTreeMap<String, Vec<u8>>,
+    },
     Completed,
 }
 
@@ -275,6 +362,9 @@ impl SessionInner {
             SessionInner::KeygenR2 { .. } => "KeygenR2",
             SessionInner::SignR1 { .. } => "SignR1",
             SessionInner::SignR2 { .. } => "SignR2",
+            SessionInner::ReshareR1 { .. } => "ReshareR1",
+            SessionInner::ReshareR2 { .. } => "ReshareR2",
+            SessionInner::ReshareR3 { .. } => "ReshareR3",
             SessionInner::Completed => "Completed",
         }
     }
@@ -375,6 +465,145 @@ impl SessionInner {
             },
             StepOutput {
                 messages: vec![out],
+                result: None,
+            },
+        ))
+    }
+
+    /// Create and start a reshare session.
+    fn start_reshare(
+        session_id: &str,
+        params: ReshareParams,
+        storage: &Storage,
+    ) -> Result<(Self, StepOutput), String> {
+        let is_old = params.old_party_ids.contains(&params.party_id);
+        let is_new = params.new_party_ids.contains(&params.party_id);
+        if !is_old && !is_new {
+            return Err(format!("party {} not in old or new sets", params.party_id));
+        }
+
+        // Derive scalar IDs for old and new parties using frost's Identifier::derive.
+        let old_scalars: Vec<k256::Scalar> = params
+            .old_party_ids
+            .iter()
+            .map(|pid| reshare::identifier_to_scalar(
+                &frost::Identifier::derive(pid.as_bytes()).unwrap()
+            ).unwrap())
+            .collect();
+        let new_scalars: Vec<k256::Scalar> = params
+            .new_party_ids
+            .iter()
+            .map(|pid| reshare::identifier_to_scalar(
+                &frost::Identifier::derive(pid.as_bytes()).unwrap()
+            ).unwrap())
+            .collect();
+
+        let self_old_scalar = if is_old {
+            let id = frost::Identifier::derive(params.party_id.as_bytes())
+                .map_err(|e| format!("derive self old id: {e}"))?;
+            Some(reshare::identifier_to_scalar(&id)?)
+        } else {
+            None
+        };
+        let self_new_scalar = if is_new {
+            let id = frost::Identifier::derive(params.party_id.as_bytes())
+                .map_err(|e| format!("derive self new id: {e}"))?;
+            Some(reshare::identifier_to_scalar(&id)?)
+        } else {
+            None
+        };
+
+        // Load existing key (old parties must have one).
+        let stored = storage.get_key(&params.group_id, &params.key_id)?;
+        let (old_secret, group_key, generation) = if is_old {
+            let s = stored.ok_or_else(|| {
+                format!("reshare: old party has no key for {}/{}", params.group_id, params.key_id)
+            })?;
+            // Extract the secret scalar from the frost KeyPackage.
+            let kp = frost::keys::KeyPackage::deserialize(&s.key_package)
+                .map_err(|e| format!("deserialize key package: {e}"))?;
+            let secret_bytes = kp.signing_share().serialize();
+            let secret = reshare::deserialize_scalar(&secret_bytes)
+                .map_err(|e| format!("decode secret scalar: {e}"))?;
+            (Some(secret), s.group_key, s.generation)
+        } else {
+            // New-only party: no secret. group_key and generation will be learned from R1.
+            (None, vec![], 0)
+        };
+
+        // If old, generate polynomial and broadcast commitments immediately.
+        let mut messages = Vec::new();
+        let mut polynomial = None;
+        let mut chain_key = None;
+        let mut r1_received = BTreeMap::new();
+
+        if is_old {
+            let secret = old_secret.unwrap();
+            let lambda = reshare::lagrange_coefficient(
+                self_old_scalar.as_ref().unwrap(),
+                &old_scalars,
+            );
+            let weighted_secret = secret * &lambda;
+
+            let mut rng = rand::thread_rng();
+            let poly = Polynomial::random(
+                weighted_secret,
+                (params.new_threshold - 1) as usize,
+                &mut rng,
+            );
+
+            let commitments = poly.commitments();
+            let encoded_commitments: Vec<Vec<u8>> = commitments
+                .iter()
+                .map(|c| reshare::serialize_point(c))
+                .collect();
+
+            let mut ck = [0u8; 32];
+            rng.fill_bytes(&mut ck);
+
+            let payload = ReshareR1Payload {
+                commitments: encoded_commitments,
+                chain_key: ck.to_vec(),
+                generation,
+                group_key: group_key.clone(),
+            };
+
+            // Store own R1 payload.
+            r1_received.insert(params.party_id.clone(), payload.clone());
+
+            // Broadcast R1.
+            let data = cbor_encode(&payload)?;
+            messages.push(OutgoingMessage {
+                session_id: session_id.to_string(),
+                from: params.party_id.clone(),
+                to: String::new(),
+                payload: data,
+            });
+
+            polynomial = Some(poly);
+            chain_key = Some(ck.to_vec());
+        }
+
+        Ok((
+            SessionInner::ReshareR1 {
+                session_id: session_id.to_string(),
+                params,
+                is_old,
+                is_new,
+                polynomial,
+                chain_key,
+                old_scalars,
+                new_scalars,
+                self_old_scalar,
+                self_new_scalar,
+                old_secret,
+                group_key,
+                generation,
+                r1_received,
+                broadcast_sent: is_old, // old parties broadcast on start
+            },
+            StepOutput {
+                messages,
                 result: None,
             },
         ))
@@ -767,6 +996,491 @@ impl SessionInner {
                         }),
                     )
                 }
+            }
+
+            // -----------------------------------------------------------------
+            // Reshare Round 1: collect R1 broadcasts from all old parties
+            // -----------------------------------------------------------------
+            SessionInner::ReshareR1 {
+                session_id,
+                params,
+                is_old,
+                is_new,
+                polynomial,
+                chain_key,
+                old_scalars,
+                new_scalars,
+                self_old_scalar,
+                self_new_scalar,
+                old_secret,
+                group_key,
+                generation,
+                mut r1_received,
+                broadcast_sent,
+            } => {
+                // Only accept R1 from old parties.
+                if !params.old_party_ids.contains(&from.to_string()) {
+                    return (
+                        SessionInner::ReshareR1 {
+                            session_id, params, is_old, is_new, polynomial, chain_key,
+                            old_scalars, new_scalars, self_old_scalar, self_new_scalar,
+                            old_secret, group_key, generation, r1_received, broadcast_sent,
+                        },
+                        Err(ProcessError::Invalid(format!("R1 from non-old party: {from}"))),
+                    );
+                }
+                if r1_received.contains_key(from) {
+                    return (
+                        SessionInner::ReshareR1 {
+                            session_id, params, is_old, is_new, polynomial, chain_key,
+                            old_scalars, new_scalars, self_old_scalar, self_new_scalar,
+                            old_secret, group_key, generation, r1_received, broadcast_sent,
+                        },
+                        Err(ProcessError::Invalid(format!("duplicate R1 from {from}"))),
+                    );
+                }
+
+                let r1: ReshareR1Payload = match cbor_decode(payload) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return (
+                            SessionInner::ReshareR1 {
+                                session_id, params, is_old, is_new, polynomial, chain_key,
+                                old_scalars, new_scalars, self_old_scalar, self_new_scalar,
+                                old_secret, group_key, generation, r1_received, broadcast_sent,
+                            },
+                            Err(ProcessError::WrongRound(e)),
+                        );
+                    }
+                };
+                r1_received.insert(from.to_string(), r1);
+
+                // Not all R1 collected yet.
+                if r1_received.len() < params.old_party_ids.len() {
+                    return (
+                        SessionInner::ReshareR1 {
+                            session_id, params, is_old, is_new, polynomial, chain_key,
+                            old_scalars, new_scalars, self_old_scalar, self_new_scalar,
+                            old_secret, group_key, generation, r1_received, broadcast_sent,
+                        },
+                        Ok(StepOutput { messages: vec![], result: None }),
+                    );
+                }
+
+                // All R1 received. Verify group key consistency and decode commitments.
+                let resolved_group_key = if group_key.is_empty() {
+                    // New-only party: learn group key from first R1.
+                    r1_received.values().next().unwrap().group_key.clone()
+                } else {
+                    group_key
+                };
+                let resolved_generation = if generation == 0 && !is_old {
+                    r1_received.values().next().unwrap().generation
+                } else {
+                    generation
+                };
+
+                // Verify all old parties agree on group key.
+                for (pid, r1) in &r1_received {
+                    if r1.group_key != resolved_group_key {
+                        return (
+                            SessionInner::Completed,
+                            Err(ProcessError::Invalid(format!("group key mismatch from {pid}"))),
+                        );
+                    }
+                }
+
+                // Decode commitments.
+                let mut all_commitments: BTreeMap<String, Vec<k256::ProjectivePoint>> = BTreeMap::new();
+                for (pid, r1) in &r1_received {
+                    let mut points = Vec::new();
+                    for raw in &r1.commitments {
+                        match reshare::deserialize_point(raw) {
+                            Ok(p) => points.push(p),
+                            Err(e) => return (
+                                SessionInner::Completed,
+                                Err(ProcessError::Invalid(format!("bad commitment from {pid}: {e}"))),
+                            ),
+                        }
+                    }
+                    all_commitments.insert(pid.clone(), points);
+                }
+
+                // Verify group key preservation: sum of constant terms == group key.
+                let group_key_point = match reshare::deserialize_point(&resolved_group_key) {
+                    Ok(p) => p,
+                    Err(e) => return (
+                        SessionInner::Completed,
+                        Err(ProcessError::Invalid(format!("bad group key: {e}"))),
+                    ),
+                };
+                let mut commit_sum = k256::ProjectivePoint::IDENTITY;
+                for (_, commits) in &all_commitments {
+                    commit_sum = commit_sum + commits[0];
+                }
+                if commit_sum != group_key_point {
+                    return (
+                        SessionInner::Completed,
+                        Err(ProcessError::Invalid("commitment constants don't sum to group key".into())),
+                    );
+                }
+
+                // Collect chain keys sorted by party_id.
+                let mut sorted_chain_keys: Vec<(String, Vec<u8>)> = r1_received
+                    .iter()
+                    .map(|(pid, r1)| (pid.clone(), r1.chain_key.clone()))
+                    .collect();
+                sorted_chain_keys.sort_by(|a, b| a.0.cmp(&b.0));
+
+                // Old parties: send sub-shares to new parties.
+                let mut messages = Vec::new();
+                if is_old {
+                    let poly = polynomial.as_ref().unwrap();
+                    for (i, new_pid) in params.new_party_ids.iter().enumerate() {
+                        if *new_pid == params.party_id {
+                            continue; // compute own locally in R2
+                        }
+                        let sub_share = poly.evaluate(&new_scalars[i]);
+                        let payload = ReshareR2Payload {
+                            sub_share: reshare::serialize_scalar(&sub_share),
+                        };
+                        let data = match cbor_encode(&payload) {
+                            Ok(d) => d,
+                            Err(e) => return (SessionInner::Completed, Err(ProcessError::Invalid(e))),
+                        };
+                        messages.push(OutgoingMessage {
+                            session_id: session_id.clone(),
+                            from: params.party_id.clone(),
+                            to: new_pid.clone(),
+                            payload: data,
+                        });
+                    }
+                }
+
+                (
+                    SessionInner::ReshareR2 {
+                        session_id,
+                        params,
+                        is_old,
+                        is_new,
+                        polynomial,
+                        old_scalars,
+                        new_scalars,
+                        self_new_scalar,
+                        group_key: resolved_group_key,
+                        generation: resolved_generation,
+                        all_commitments,
+                        chain_keys: sorted_chain_keys,
+                        sub_shares: BTreeMap::new(),
+                    },
+                    Ok(StepOutput { messages, result: None }),
+                )
+            }
+
+            // -----------------------------------------------------------------
+            // Reshare Round 2: new parties collect sub-shares from old parties
+            // -----------------------------------------------------------------
+            SessionInner::ReshareR2 {
+                session_id,
+                params,
+                is_old,
+                is_new,
+                polynomial,
+                old_scalars,
+                new_scalars,
+                self_new_scalar,
+                group_key,
+                generation,
+                all_commitments,
+                chain_keys,
+                mut sub_shares,
+            } => {
+                if !params.old_party_ids.contains(&from.to_string()) {
+                    return (
+                        SessionInner::ReshareR2 {
+                            session_id, params, is_old, is_new, polynomial,
+                            old_scalars, new_scalars, self_new_scalar,
+                            group_key, generation, all_commitments, chain_keys, sub_shares,
+                        },
+                        Err(ProcessError::Invalid(format!("R2 from non-old party: {from}"))),
+                    );
+                }
+                if sub_shares.contains_key(from) {
+                    return (
+                        SessionInner::ReshareR2 {
+                            session_id, params, is_old, is_new, polynomial,
+                            old_scalars, new_scalars, self_new_scalar,
+                            group_key, generation, all_commitments, chain_keys, sub_shares,
+                        },
+                        Err(ProcessError::Invalid(format!("duplicate R2 from {from}"))),
+                    );
+                }
+
+                let r2: ReshareR2Payload = match cbor_decode(payload) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return (
+                            SessionInner::ReshareR2 {
+                                session_id, params, is_old, is_new, polynomial,
+                                old_scalars, new_scalars, self_new_scalar,
+                                group_key, generation, all_commitments, chain_keys, sub_shares,
+                            },
+                            Err(ProcessError::WrongRound(e)),
+                        );
+                    }
+                };
+
+                let sub_share = match reshare::deserialize_scalar(&r2.sub_share) {
+                    Ok(s) => s,
+                    Err(e) => return (
+                        SessionInner::Completed,
+                        Err(ProcessError::Invalid(format!("bad sub-share from {from}: {e}"))),
+                    ),
+                };
+
+                // Feldman verification.
+                let self_scalar = self_new_scalar.unwrap();
+                let commitments = &all_commitments[from];
+                if !reshare::verify_feldman(&self_scalar, &sub_share, commitments) {
+                    return (
+                        SessionInner::Completed,
+                        Err(ProcessError::Invalid(format!("Feldman verification failed for {from}"))),
+                    );
+                }
+
+                sub_shares.insert(from.to_string(), sub_share);
+
+                // If old+new, compute own sub-share locally.
+                if is_old && !sub_shares.contains_key(&params.party_id) {
+                    let poly = polynomial.as_ref().unwrap();
+                    let own_share = poly.evaluate(&self_scalar);
+                    sub_shares.insert(params.party_id.clone(), own_share);
+                }
+
+                // Need sub-shares from all old parties.
+                if sub_shares.len() < params.old_party_ids.len() {
+                    return (
+                        SessionInner::ReshareR2 {
+                            session_id, params, is_old, is_new, polynomial,
+                            old_scalars, new_scalars, self_new_scalar,
+                            group_key, generation, all_commitments, chain_keys, sub_shares,
+                        },
+                        Ok(StepOutput { messages: vec![], result: None }),
+                    );
+                }
+
+                if is_new {
+                    // Combine sub-shares: s'_j = Σ f_i(j)
+                    let mut new_secret = k256::Scalar::ZERO;
+                    for (_, share) in &sub_shares {
+                        new_secret = new_secret + share;
+                    }
+
+                    // Compute verifying share (public key share).
+                    let verifying_share = k256::ProjectivePoint::GENERATOR * &new_secret;
+                    let vs_bytes = reshare::serialize_point(&verifying_share);
+
+                    // Broadcast R3.
+                    let r3_payload = ReshareR3Payload {
+                        verifying_share: vs_bytes.clone(),
+                    };
+                    let data = match cbor_encode(&r3_payload) {
+                        Ok(d) => d,
+                        Err(e) => return (SessionInner::Completed, Err(ProcessError::Invalid(e))),
+                    };
+                    let messages = vec![OutgoingMessage {
+                        session_id: session_id.clone(),
+                        from: params.party_id.clone(),
+                        to: String::new(),
+                        payload: data,
+                    }];
+
+                    let mut pub_shares = BTreeMap::new();
+                    pub_shares.insert(params.party_id.clone(), vs_bytes);
+
+                    (
+                        SessionInner::ReshareR3 {
+                            session_id,
+                            params,
+                            new_scalars,
+                            self_new_scalar: self_scalar,
+                            group_key,
+                            generation,
+                            new_secret,
+                            chain_keys,
+                            pub_shares,
+                        },
+                        Ok(StepOutput { messages, result: None }),
+                    )
+                } else {
+                    // Old-only party: done. Return result with incremented generation.
+                    (
+                        SessionInner::Completed,
+                        Ok(StepOutput {
+                            messages: vec![],
+                            result: Some(SessionResult {
+                                group_key: Some(group_key),
+                                verifying_share: None,
+                                signature_r: None,
+                                signature_z: None,
+                            }),
+                        }),
+                    )
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // Reshare Round 3: new parties exchange verifying shares and finalize
+            // -----------------------------------------------------------------
+            SessionInner::ReshareR3 {
+                session_id,
+                params,
+                new_scalars,
+                self_new_scalar,
+                group_key,
+                generation,
+                new_secret,
+                chain_keys,
+                mut pub_shares,
+            } => {
+                if !params.new_party_ids.contains(&from.to_string()) {
+                    return (
+                        SessionInner::ReshareR3 {
+                            session_id, params, new_scalars, self_new_scalar,
+                            group_key, generation, new_secret, chain_keys, pub_shares,
+                        },
+                        Err(ProcessError::Invalid(format!("R3 from non-new party: {from}"))),
+                    );
+                }
+                if pub_shares.contains_key(from) {
+                    return (
+                        SessionInner::ReshareR3 {
+                            session_id, params, new_scalars, self_new_scalar,
+                            group_key, generation, new_secret, chain_keys, pub_shares,
+                        },
+                        Err(ProcessError::Invalid(format!("duplicate R3 from {from}"))),
+                    );
+                }
+
+                let r3: ReshareR3Payload = match cbor_decode(payload) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return (
+                            SessionInner::ReshareR3 {
+                                session_id, params, new_scalars, self_new_scalar,
+                                group_key, generation, new_secret, chain_keys, pub_shares,
+                            },
+                            Err(ProcessError::WrongRound(e)),
+                        );
+                    }
+                };
+                pub_shares.insert(from.to_string(), r3.verifying_share);
+
+                if pub_shares.len() < params.new_party_ids.len() {
+                    return (
+                        SessionInner::ReshareR3 {
+                            session_id, params, new_scalars, self_new_scalar,
+                            group_key, generation, new_secret, chain_keys, pub_shares,
+                        },
+                        Ok(StepOutput { messages: vec![], result: None }),
+                    );
+                }
+
+                // All pub shares collected. Build the new key and persist.
+                let (combined_chain_key, _rid) = reshare::combine_chain_keys(&chain_keys);
+
+                // Compute own verifying share.
+                let self_verifying_share = k256::ProjectivePoint::GENERATOR * &new_secret;
+                let vs_bytes = reshare::serialize_point(&self_verifying_share);
+
+                // Build a new KeyPackage and PublicKeyPackage from the reshare output.
+                // We need to construct these in the format frost-secp256k1 expects.
+                let self_frost_id = frost::Identifier::derive(params.party_id.as_bytes())
+                    .map_err(|e| format!("derive frost id: {e}"));
+                let self_frost_id = match self_frost_id {
+                    Ok(id) => id,
+                    Err(e) => return (SessionInner::Completed, Err(ProcessError::Invalid(e))),
+                };
+
+                // Build verifying_shares map for PublicKeyPackage.
+                let mut frost_verifying_shares = BTreeMap::new();
+                for (pid, share_bytes) in &pub_shares {
+                    let fid = match frost::Identifier::derive(pid.as_bytes()) {
+                        Ok(id) => id,
+                        Err(e) => return (SessionInner::Completed, Err(ProcessError::Invalid(format!("derive id for {pid}: {e}")))),
+                    };
+                    let vs_array: [u8; 33] = match share_bytes.clone().try_into() {
+                        Ok(a) => a,
+                        Err(_) => return (SessionInner::Completed, Err(ProcessError::Invalid(format!("verifying share for {pid} must be 33 bytes")))),
+                    };
+                    let vs = match frost::keys::VerifyingShare::deserialize(&vs_array) {
+                        Ok(v) => v,
+                        Err(e) => return (SessionInner::Completed, Err(ProcessError::Invalid(format!("deserialize verifying share for {pid}: {e}")))),
+                    };
+                    frost_verifying_shares.insert(fid, vs);
+                }
+
+                let gk_array: [u8; 33] = match group_key.clone().try_into() {
+                    Ok(a) => a,
+                    Err(_) => return (SessionInner::Completed, Err(ProcessError::Invalid("group key must be 33 bytes".into()))),
+                };
+                let group_verifying_key = match frost::VerifyingKey::deserialize(&gk_array) {
+                    Ok(v) => v,
+                    Err(e) => return (SessionInner::Completed, Err(ProcessError::Invalid(format!("deserialize group key: {e}")))),
+                };
+
+                let ss_bytes: [u8; 32] = reshare::serialize_scalar(&new_secret).try_into().unwrap();
+                let signing_share = match frost::keys::SigningShare::deserialize(&ss_bytes) {
+                    Ok(s) => s,
+                    Err(e) => return (SessionInner::Completed, Err(ProcessError::Invalid(format!("build signing share: {e}")))),
+                };
+
+                let key_package = frost::keys::KeyPackage::new(
+                    self_frost_id,
+                    signing_share,
+                    *frost_verifying_shares.get(&self_frost_id).unwrap(),
+                    group_verifying_key,
+                    params.new_threshold,
+                );
+                let pub_key_package = frost::keys::PublicKeyPackage::new(
+                    frost_verifying_shares,
+                    group_verifying_key,
+                );
+
+                let kp_bytes = match key_package.serialize() {
+                    Ok(b) => b,
+                    Err(e) => return (SessionInner::Completed, Err(ProcessError::Invalid(format!("serialize key package: {e}")))),
+                };
+                let pkp_bytes = match pub_key_package.serialize() {
+                    Ok(b) => b,
+                    Err(e) => return (SessionInner::Completed, Err(ProcessError::Invalid(format!("serialize pub key package: {e}")))),
+                };
+
+                // Store as pending (the Go layer will call CommitReshare to promote).
+                let stored = StoredKey {
+                    key_package: kp_bytes,
+                    public_key_package: pkp_bytes,
+                    group_key: group_key.clone(),
+                    verifying_share: vs_bytes.clone(),
+                    generation: generation + 1,
+                };
+                let pending_key_id = format!("pending/{}", params.key_id);
+                if let Err(e) = storage.put_key(&params.group_id, &pending_key_id, &stored) {
+                    return (SessionInner::Completed, Err(ProcessError::Invalid(format!("persist pending reshare: {e}"))));
+                }
+
+                (
+                    SessionInner::Completed,
+                    Ok(StepOutput {
+                        messages: vec![],
+                        result: Some(SessionResult {
+                            group_key: Some(group_key),
+                            verifying_share: Some(vs_bytes),
+                            signature_r: None,
+                            signature_z: None,
+                        }),
+                    }),
+                )
             }
 
             SessionInner::Completed => {

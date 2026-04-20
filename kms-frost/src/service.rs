@@ -81,7 +81,10 @@ impl KeyManager for KmsService {
                     .map_err(|e| Status::internal(e))?
             }
             Ok(SessionType::Reshare) => {
-                return Err(Status::unimplemented("reshare not implemented"));
+                let p = crate::reshare::decode_reshare_params(&req.params)
+                    .map_err(|e| Status::invalid_argument(e))?;
+                Session::start_reshare(&session_id, p, &self.storage)
+                    .map_err(|e| Status::internal(e))?
             }
             _ => {
                 return Err(Status::invalid_argument("unknown session type"));
