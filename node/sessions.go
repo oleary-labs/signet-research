@@ -39,8 +39,8 @@ type SessionInfo struct {
 
 	// Auth key certificate path: stored so coord messages can carry the
 	// certificate for other participants to verify independently.
-	AuthKeyPub    []byte // 33-byte compressed pubkey of the signing auth key
-	CertSignature []byte // 64-byte [R || S] certificate signature
+	AuthKeyPub    []byte // 34-byte scheme-prefixed auth key (prefix + compressed pubkey)
+	CertSignature []byte // 64 bytes (ECDSA) or 65 bytes (Schnorr)
 	Identity      string // application-defined identity
 }
 

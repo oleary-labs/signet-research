@@ -14,11 +14,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytemare/frost"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	"go.uber.org/zap"
+)
+
+const (
+	// AuthKeySchemeECDSA is the prefix byte for secp256k1 ECDSA auth keys.
+	AuthKeySchemeECDSA byte = 0x00
+	// AuthKeySchemeSchnorr is the prefix byte for FROST-compatible secp256k1 Schnorr auth keys.
+	AuthKeySchemeSchnorr byte = 0x01
 )
 
 // IssuerInfo is an in-memory copy of an on-chain OAuthIssuer plus the JWKS URI
@@ -40,7 +48,7 @@ func IssuerHash(issuer string) [32]byte {
 type GroupAuth struct {
 	mu        sync.RWMutex
 	groups    map[string][]IssuerInfo // groupID hex → trusted issuers
-	authKeys  map[string][][]byte    // groupID hex → trusted auth key pubkeys (33-byte compressed)
+	authKeys  map[string][][]byte    // groupID hex → trusted auth keys (34-byte: scheme prefix + compressed pubkey)
 	cache     *jwk.Cache
 	circuitVK []byte // verification key for the jwt_auth circuit (bb format)
 	log       *zap.Logger
@@ -168,14 +176,22 @@ func (g *GroupAuth) IsAuthKeyTrusted(groupID string, pubkey []byte) bool {
 // AuthCertificate is an authorization key certificate: a signed binding
 // of an identity + session key, issued by an application holding a trusted
 // authorization key. The signature covers:
-//   SHA256(identity || ":" || group_id || ":" || session_pub_hex || ":" || expiry_8bytes_BE)
+//
+//	SHA256(identity || ":" || group_id || ":" || session_pub_hex || ":" || expiry_8bytes_BE)
+//
+// The auth_key_pub field is a scheme-prefixed key: 1 byte scheme prefix + 33 byte
+// compressed secp256k1 pubkey (34 bytes total). The scheme prefix determines the
+// signature format:
+//
+//	0x00 (ECDSA):   signature is 64 bytes [R || S]
+//	0x01 (Schnorr): signature is 65 bytes [R.x(32) || z(32) || v(1)]
 type AuthCertificate struct {
-	Identity   string `json:"identity"`    // application-defined identity (agent ID, service name, etc.)
-	GroupID    string `json:"group_id"`    // target group
-	SessionPub string `json:"session_pub"` // hex, 33-byte compressed secp256k1
-	Expiry     uint64 `json:"expiry"`      // unix timestamp
-	AuthKeyPub string `json:"auth_key_pub"` // hex, 33-byte compressed — which auth key signed this
-	Signature  string `json:"signature"`   // hex, 64-byte [R || S]
+	Identity   string `json:"identity"`     // application-defined identity (agent ID, service name, etc.)
+	GroupID    string `json:"group_id"`     // target group
+	SessionPub string `json:"session_pub"`  // hex, 33-byte compressed secp256k1
+	Expiry     uint64 `json:"expiry"`       // unix timestamp
+	AuthKeyPub string `json:"auth_key_pub"` // hex, 34-byte scheme-prefixed key (prefix + compressed pubkey)
+	Signature  string `json:"signature"`    // hex, 64 bytes (ECDSA) or 65 bytes (Schnorr)
 }
 
 // authCertHash builds the canonical hash that the auth key signs.
@@ -195,6 +211,159 @@ func authCertHash(identity, groupID, sessionPubHex string, expiry uint64) [32]by
 	return out
 }
 
+// verifyAuthKeySignature dispatches signature verification based on the scheme prefix.
+// pubkey is the raw 33-byte compressed secp256k1 key (prefix already stripped).
+func verifyAuthKeySignature(scheme byte, pubkey, hash, sig []byte) error {
+	switch scheme {
+	case AuthKeySchemeECDSA:
+		if len(sig) != 64 {
+			return fmt.Errorf("ECDSA signature must be 64 bytes, got %d", len(sig))
+		}
+		if !crypto.VerifySignature(pubkey, hash, sig) {
+			return fmt.Errorf("ECDSA verification failed")
+		}
+		return nil
+
+	case AuthKeySchemeSchnorr:
+		if len(sig) != 65 {
+			return fmt.Errorf("Schnorr signature must be 65 bytes, got %d", len(sig))
+		}
+		return verifySchnorrSignature(pubkey, hash, sig)
+
+	default:
+		return fmt.Errorf("unknown auth key scheme: 0x%02x", scheme)
+	}
+}
+
+// verifySchnorrSignature verifies a FROST-compatible secp256k1 Schnorr signature
+// (RFC 9591, FROST-secp256k1-SHA256-v1). sig is 65 bytes: R.x(32) || z(32) || v(1).
+// pubkey is a 33-byte compressed secp256k1 public key.
+func verifySchnorrSignature(pubkey, message, sig []byte) error {
+	if len(pubkey) != 33 || len(sig) != 65 {
+		return fmt.Errorf("invalid lengths: pubkey=%d sig=%d", len(pubkey), len(sig))
+	}
+
+	g := frost.Secp256k1.Group()
+
+	// Decode z scalar.
+	zScalar := g.NewScalar()
+	if err := zScalar.Decode(sig[32:64]); err != nil {
+		return fmt.Errorf("decode z scalar: %w", err)
+	}
+
+	// Reconstruct compressed R from R.x and v parity.
+	v := sig[64]
+	rCompressed := make([]byte, 33)
+	if v == 0 {
+		rCompressed[0] = 0x02
+	} else {
+		rCompressed[0] = 0x03
+	}
+	copy(rCompressed[1:], sig[0:32])
+
+	// Decode R point.
+	rPoint := g.NewElement()
+	if err := rPoint.Decode(rCompressed); err != nil {
+		return fmt.Errorf("decode R point: %w", err)
+	}
+
+	// Decode PK point.
+	pkPoint := g.NewElement()
+	if err := pkPoint.Decode(pubkey); err != nil {
+		return fmt.Errorf("decode public key: %w", err)
+	}
+
+	// Compute FROST challenge: c = H2(R_compressed || PK || message).
+	challengeInput := make([]byte, 0, len(rCompressed)+len(pubkey)+len(message))
+	challengeInput = append(challengeInput, rCompressed...)
+	challengeInput = append(challengeInput, pubkey...)
+	challengeInput = append(challengeInput, message...)
+	c := frostChallenge(challengeInput)
+
+	cBytes := make([]byte, 32)
+	cRaw := c.Bytes()
+	copy(cBytes[32-len(cRaw):], cRaw)
+	cScalar := g.NewScalar()
+	if err := cScalar.Decode(cBytes); err != nil {
+		return fmt.Errorf("decode challenge scalar: %w", err)
+	}
+
+	// Verify: z·G == R + c·PK
+	zG := g.Base().Multiply(zScalar)
+
+	cPK := g.NewElement()
+	if err := cPK.Decode(pubkey); err != nil {
+		return fmt.Errorf("decode PK for multiply: %w", err)
+	}
+	cPK.Multiply(cScalar)
+	rPoint.Add(cPK) // rPoint = R + c·PK
+
+	if !zG.Equal(rPoint) {
+		return fmt.Errorf("Schnorr verification failed: z·G ≠ R + c·PK")
+	}
+	return nil
+}
+
+// frostChallenge computes the FROST RFC 9591 challenge:
+//
+//	c = int(expand_message_xmd(SHA-256, input, DST, 48)) mod N
+//
+// where DST = "FROST-secp256k1-SHA256-v1chal" and input = R || PK || message.
+func frostChallenge(input []byte) *big.Int {
+	dst := []byte("FROST-secp256k1-SHA256-v1chal")
+	dstPrime := append(dst, byte(len(dst)))
+	uniform := expandMessageXMD(input, dstPrime, 48)
+
+	n, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141", 16)
+	c := new(big.Int).SetBytes(uniform)
+	c.Mod(c, n)
+	return c
+}
+
+// expandMessageXMD implements RFC 9380 expand_message_xmd with SHA-256.
+func expandMessageXMD(msg, dstPrime []byte, outLen int) []byte {
+	ell := (outLen + 31) / 32
+
+	zPad := make([]byte, 64) // s_in_bytes for SHA-256
+	lStr := []byte{byte(outLen >> 8), byte(outLen)}
+
+	// b0 = SHA256(Z_pad || msg || I2OSP(outLen,2) || 0x00 || DST_prime)
+	h := sha256.New()
+	h.Write(zPad)
+	h.Write(msg)
+	h.Write(lStr)
+	h.Write([]byte{0x00})
+	h.Write(dstPrime)
+	b0 := h.Sum(nil)
+
+	// b1 = SHA256(b0 || 0x01 || DST_prime)
+	h = sha256.New()
+	h.Write(b0)
+	h.Write([]byte{0x01})
+	h.Write(dstPrime)
+	b1 := h.Sum(nil)
+
+	bs := [][]byte{b1}
+	for i := 2; i <= ell; i++ {
+		prev := bs[len(bs)-1]
+		xorPrev := make([]byte, 32)
+		for j := 0; j < 32; j++ {
+			xorPrev[j] = prev[j] ^ b0[j]
+		}
+		h = sha256.New()
+		h.Write(xorPrev)
+		h.Write([]byte{byte(i)})
+		h.Write(dstPrime)
+		bs = append(bs, h.Sum(nil))
+	}
+
+	var uniform []byte
+	for _, b := range bs {
+		uniform = append(uniform, b...)
+	}
+	return uniform[:outLen]
+}
+
 // ValidateAuthCertificate verifies that the certificate is signed by a trusted
 // authorization key for the group and returns the identity.
 func (g *GroupAuth) ValidateAuthCertificate(groupID string, cert *AuthCertificate) (string, error) {
@@ -209,8 +378,8 @@ func (g *GroupAuth) ValidateAuthCertificate(groupID string, cert *AuthCertificat
 	}
 
 	authKeyBytes, err := hex.DecodeString(strings.TrimPrefix(cert.AuthKeyPub, "0x"))
-	if err != nil || len(authKeyBytes) != 33 {
-		return "", fmt.Errorf("invalid auth_key_pub: must be 33 hex-encoded bytes")
+	if err != nil || len(authKeyBytes) != 34 {
+		return "", fmt.Errorf("invalid auth_key_pub: must be 34 hex-encoded bytes (1 scheme prefix + 33 pubkey)")
 	}
 
 	if !g.IsAuthKeyTrusted(groupID, authKeyBytes) {
@@ -218,13 +387,16 @@ func (g *GroupAuth) ValidateAuthCertificate(groupID string, cert *AuthCertificat
 	}
 
 	sigBytes, err := hex.DecodeString(strings.TrimPrefix(cert.Signature, "0x"))
-	if err != nil || len(sigBytes) != 64 {
-		return "", fmt.Errorf("invalid signature: must be 64 hex-encoded bytes")
+	if err != nil {
+		return "", fmt.Errorf("invalid signature hex")
 	}
 
+	scheme := authKeyBytes[0]
+	pubkey := authKeyBytes[1:]
 	hash := authCertHash(cert.Identity, cert.GroupID, cert.SessionPub, cert.Expiry)
-	if !crypto.VerifySignature(authKeyBytes, hash[:], sigBytes) {
-		return "", fmt.Errorf("certificate signature verification failed")
+
+	if err := verifyAuthKeySignature(scheme, pubkey, hash[:], sigBytes); err != nil {
+		return "", fmt.Errorf("certificate signature verification failed: %w", err)
 	}
 
 	return cert.Identity, nil
@@ -257,8 +429,8 @@ type AuthProof struct {
 	// Authorization key certificate fields (auth key path only).
 	// When AuthKeyPub is set, participants verify CertSignature against
 	// the group's on-chain auth keys instead of verifying a ZK proof.
-	AuthKeyPub    []byte `cbor:"14,keyasint,omitempty"` // 33-byte compressed secp256k1
-	CertSignature []byte `cbor:"15,keyasint,omitempty"` // 64-byte [R || S]
+	AuthKeyPub    []byte `cbor:"14,keyasint,omitempty"` // 34-byte scheme-prefixed key (prefix + compressed pubkey)
+	CertSignature []byte `cbor:"15,keyasint,omitempty"` // 64 bytes (ECDSA) or 65 bytes (Schnorr)
 	Identity      string `cbor:"16,keyasint,omitempty"` // application-defined identity
 }
 
@@ -398,21 +570,20 @@ func (g *GroupAuth) ValidateAuthProof(ctx context.Context, groupID string, proof
 	}
 
 	// Auth key certificate path.
-	if len(proof.AuthKeyPub) > 0 {
+	if len(proof.AuthKeyPub) >= 34 {
 		if proof.Identity == "" {
 			return "", fmt.Errorf("auth proof missing identity")
 		}
 		if !g.IsAuthKeyTrusted(groupID, proof.AuthKeyPub) {
 			return "", fmt.Errorf("untrusted authorization key")
 		}
-		if len(proof.CertSignature) != 64 {
-			return "", fmt.Errorf("invalid cert signature length")
-		}
 
+		scheme := proof.AuthKeyPub[0]
+		pubkey := proof.AuthKeyPub[1:]
 		sessionPubHex := hex.EncodeToString(proof.SessionPub)
 		hash := authCertHash(proof.Identity, groupID, sessionPubHex, proof.Exp)
-		if !crypto.VerifySignature(proof.AuthKeyPub, hash[:], proof.CertSignature) {
-			return "", fmt.Errorf("certificate signature verification failed")
+		if err := verifyAuthKeySignature(scheme, pubkey, hash[:], proof.CertSignature); err != nil {
+			return "", fmt.Errorf("certificate signature verification failed: %w", err)
 		}
 		return proof.Identity, nil
 	}
