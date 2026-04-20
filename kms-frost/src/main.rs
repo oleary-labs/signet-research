@@ -59,12 +59,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     Server::builder()
-        .add_service(KeyManagerServer::new(KmsService::new(storage)))
+        .add_service(KeyManagerServer::new(KmsService::new(storage.clone())))
         .serve_with_incoming_shutdown(uds_stream, async {
             tokio::signal::ctrl_c().await.ok();
             info!("shutting down");
         })
         .await?;
+
+    // Explicit flush on shutdown — sled flushes on drop but that isn't
+    // guaranteed to run during abrupt process exit.
+    storage.flush();
+    info!("storage flushed, exiting");
 
     Ok(())
 }

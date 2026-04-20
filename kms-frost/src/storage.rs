@@ -37,6 +37,11 @@ impl Storage {
         Ok(Storage { db })
     }
 
+    /// Flush all pending writes to disk.
+    pub fn flush(&self) {
+        let _ = self.db.flush();
+    }
+
     /// Normalize a group_id to lowercase hex without "0x" prefix.
     fn normalize_group_id(group_id: &str) -> String {
         group_id
@@ -62,7 +67,8 @@ impl Storage {
     // Active key operations (hot path)
     // -------------------------------------------------------------------------
 
-    /// Store an active key under (group_id, key_id).
+    /// Store an active key under (group_id, key_id). Flushes immediately —
+    /// this is the keygen completion path and must be durable before reporting success.
     pub fn put_key(&self, group_id: &str, key_id: &str, key: &StoredKey) -> Result<(), String> {
         let tree = self
             .db
@@ -97,7 +103,8 @@ impl Storage {
     // Pending key operations (reshare in-flight)
     // -------------------------------------------------------------------------
 
-    /// Store a pending reshare result.
+    /// Store a pending reshare result. No immediate flush — the pending result
+    /// is not critical until commit_reshare promotes it (which flushes).
     pub fn put_pending(&self, group_id: &str, key_id: &str, key: &StoredKey) -> Result<(), String> {
         let tree = self
             .db
@@ -106,7 +113,6 @@ impl Storage {
         let data = serde_json::to_vec(key).map_err(|e| format!("serialize key: {e}"))?;
         tree.insert(key_id.as_bytes(), data)
             .map_err(|e| format!("insert pending: {e}"))?;
-        tree.flush().map_err(|e| format!("flush: {e}"))?;
         Ok(())
     }
 
@@ -175,14 +181,13 @@ impl Storage {
                 format!("commit transaction failed: {e:?}")
             })?;
 
-        active_tree.flush().map_err(|e| format!("flush active: {e}"))?;
-        pending_tree.flush().map_err(|e| format!("flush pending: {e}"))?;
-        archive_tree.flush().map_err(|e| format!("flush archive: {e}"))?;
+        self.db.flush().map_err(|e| format!("flush: {e}"))?;
 
         Ok(generation)
     }
 
-    /// Discard a pending reshare result without promoting.
+    /// Discard a pending reshare result without promoting. No flush — discarding
+    /// a pending result is non-critical; sled's auto-flush covers it.
     pub fn discard_pending_reshare(&self, group_id: &str, key_id: &str) -> Result<(), String> {
         let tree = self
             .db
@@ -190,7 +195,6 @@ impl Storage {
             .map_err(|e| format!("open pending tree: {e}"))?;
         tree.remove(key_id.as_bytes())
             .map_err(|e| format!("remove pending: {e}"))?;
-        tree.flush().map_err(|e| format!("flush: {e}"))?;
         Ok(())
     }
 
@@ -235,8 +239,7 @@ impl Storage {
                 format!("rollback transaction failed: {e:?}")
             })?;
 
-        active_tree.flush().map_err(|e| format!("flush: {e}"))?;
-        pending_tree.flush().map_err(|e| format!("flush: {e}"))?;
+        self.db.flush().map_err(|e| format!("flush: {e}"))?;
         Ok(())
     }
 
