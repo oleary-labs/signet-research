@@ -9,6 +9,7 @@ pub mod proto {
 }
 
 mod params;
+mod reshare;
 mod service;
 mod session;
 mod storage;
