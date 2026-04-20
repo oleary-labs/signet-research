@@ -1464,8 +1464,7 @@ impl SessionInner {
                     verifying_share: vs_bytes.clone(),
                     generation: generation + 1,
                 };
-                let pending_key_id = format!("pending/{}", params.key_id);
-                if let Err(e) = storage.put_key(&params.group_id, &pending_key_id, &stored) {
+                if let Err(e) = storage.put_pending(&params.group_id, &params.key_id, &stored) {
                     return (SessionInner::Completed, Err(ProcessError::Invalid(format!("persist pending reshare: {e}"))));
                 }
 
@@ -2086,17 +2085,16 @@ mod tests {
             "group keys disagree after reshare"
         );
 
-        // Promote pending keys to active for new parties.
+        // Promote pending keys to active for new parties via commit_reshare.
         for pid in &new_ids {
             let (_, storage) = sessions.get(pid).unwrap();
-            let pending_key_id = format!("pending/{}", KEY_ID);
             let pending = storage
-                .get_key(GROUP_ID, &pending_key_id)
+                .get_pending(GROUP_ID, KEY_ID)
                 .unwrap()
                 .expect("pending key should exist after reshare");
             assert_eq!(pending.generation, 1, "generation should be incremented");
-            // Promote: write to active key_id.
-            storage.put_key(GROUP_ID, KEY_ID, &pending).unwrap();
+            let new_gen = storage.commit_reshare(GROUP_ID, KEY_ID).unwrap();
+            assert_eq!(new_gen, 1);
         }
 
         // Move storages back.
