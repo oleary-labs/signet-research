@@ -1531,17 +1531,19 @@ mod tests {
             .collect()
     }
 
-    /// Route a batch of outgoing messages from one session to the appropriate
-    /// peer sessions. Broadcasts (to == "") go to every session except the
-    /// sender; unicasts go to the named recipient.
+    /// Route messages between sessions using a breadth-first queue.
+    /// Broadcasts (to == "") go to every session except the sender;
+    /// unicasts go to the named recipient.
     ///
     /// Returns all results produced by the receiving sessions.
     fn route(
-        msgs: Vec<OutgoingMessage>,
+        initial_msgs: Vec<OutgoingMessage>,
         sessions: &mut HashMap<String, (Session, Storage)>,
     ) -> Vec<SessionResult> {
         let mut results = Vec::new();
-        for msg in msgs {
+        let mut queue: std::collections::VecDeque<OutgoingMessage> = initial_msgs.into();
+
+        while let Some(msg) = queue.pop_front() {
             let recipients: Vec<String> = if msg.to.is_empty() {
                 sessions
                     .keys()
@@ -1557,13 +1559,11 @@ mod tests {
                     let out = session
                         .process_message(&msg.from, &recipient, &msg.payload, storage)
                         .expect("process_message failed");
-                    let sub_msgs = out.messages;
                     if let Some(r) = out.result {
                         results.push(r);
                     }
-                    if !sub_msgs.is_empty() {
-                        let sub_results = route(sub_msgs, sessions);
-                        results.extend(sub_results);
+                    for m in out.messages {
+                        queue.push_back(m);
                     }
                 }
             }
@@ -2021,5 +2021,118 @@ mod tests {
         let message = b"cold storage signing test!!!!!!!" ;
         let (sig_r, sig_z) = run_sign(&["peer-B", "peer-C"], message, &mut owned);
         verify_signature(&group_key, message, &sig_r, &sig_z);
+    }
+
+    // =======================================================================
+    // Reshare: same committee, key refresh
+    // =======================================================================
+
+    /// Run a same-committee reshare (key refresh). Promotes the pending key
+    /// to active by renaming in storage. Returns the group key (should be preserved).
+    fn run_reshare(
+        old_parties: &[&str],
+        new_parties: &[&str],
+        new_threshold: u16,
+        owned: &mut HashMap<String, (Storage, tempfile::TempDir)>,
+    ) -> Vec<u8> {
+        let old_ids: Vec<String> = old_parties.iter().map(|s| s.to_string()).collect();
+        let new_ids: Vec<String> = new_parties.iter().map(|s| s.to_string()).collect();
+
+        // All parties involved in the reshare (union of old and new).
+        let mut all_parties: Vec<String> = old_ids.clone();
+        for p in &new_ids {
+            if !all_parties.contains(p) {
+                all_parties.push(p.clone());
+            }
+        }
+
+        let mut sessions: HashMap<String, (Session, Storage)> = HashMap::new();
+        let mut initial_messages = Vec::new();
+
+        for pid in &all_parties {
+            let params = ReshareParams {
+                group_id: GROUP_ID.to_string(),
+                key_id: KEY_ID.to_string(),
+                party_id: pid.clone(),
+                old_party_ids: old_ids.clone(),
+                new_party_ids: new_ids.clone(),
+                new_threshold,
+            };
+            let (storage, _) = owned.remove(pid).unwrap();
+            let (session, output) =
+                Session::start_reshare(&format!("reshare-{pid}"), params, &storage)
+                    .expect("start_reshare");
+            initial_messages.extend(output.messages);
+            sessions.insert(pid.clone(), (session, storage));
+        }
+
+        let results = route(initial_messages, &mut sessions);
+        // All parties should produce a result.
+        assert_eq!(
+            results.len(),
+            all_parties.len(),
+            "expected {} reshare results, got {}",
+            all_parties.len(),
+            results.len()
+        );
+
+        // All results should agree on group key.
+        let group_keys: Vec<Vec<u8>> = results
+            .iter()
+            .map(|r| r.group_key.clone().expect("group_key missing"))
+            .collect();
+        assert!(
+            group_keys.windows(2).all(|w| w[0] == w[1]),
+            "group keys disagree after reshare"
+        );
+
+        // Promote pending keys to active for new parties.
+        for pid in &new_ids {
+            let (_, storage) = sessions.get(pid).unwrap();
+            let pending_key_id = format!("pending/{}", KEY_ID);
+            let pending = storage
+                .get_key(GROUP_ID, &pending_key_id)
+                .unwrap()
+                .expect("pending key should exist after reshare");
+            assert_eq!(pending.generation, 1, "generation should be incremented");
+            // Promote: write to active key_id.
+            storage.put_key(GROUP_ID, KEY_ID, &pending).unwrap();
+        }
+
+        // Move storages back.
+        for (pid, (_, storage)) in sessions {
+            let dir = tempfile::tempdir().unwrap();
+            owned.insert(pid, (storage, dir));
+        }
+
+        group_keys.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn test_reshare_same_committee() {
+        init_tracing();
+        let mut owned = make_storages(&PARTIES);
+        let group_key = run_keygen(&mut owned);
+
+        // Sign before reshare to confirm key works.
+        let msg1 = b"before reshare, signing works!!!";
+        let (r1, z1) = run_sign(&["peer-A", "peer-B"], msg1, &mut owned);
+        verify_signature(&group_key, msg1, &r1, &z1);
+
+        // Reshare: same committee, same threshold (key refresh).
+        let reshare_group_key = run_reshare(
+            &["peer-A", "peer-B", "peer-C"],
+            &["peer-A", "peer-B", "peer-C"],
+            2,
+            &mut owned,
+        );
+
+        // Group key must be preserved.
+        assert_eq!(group_key, reshare_group_key, "reshare must preserve group key");
+
+        // Sign after reshare with new shares.
+        let msg2 = b"after reshare, still works!!!!!!";
+        let (r2, z2) = run_sign(&["peer-A", "peer-C"], msg2, &mut owned);
+        verify_signature(&group_key, msg2, &r2, &z2);
     }
 }
