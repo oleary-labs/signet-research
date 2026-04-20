@@ -560,9 +560,9 @@ func (g *GroupAuth) ValidateJWTForSession(ctx context.Context, groupID string, t
 // ValidateAuthProof verifies an AuthProof received in a coord message.
 // Two paths:
 //   - Auth key certificate: AuthKeyPub is set → verify cert signature against
-//     on-chain auth keys. Returns the certificate Identity as the key prefix.
+//     on-chain auth keys. Returns "authkey:<identity>" as the key prefix.
 //   - OAuth/ZK: Proof is set → verify ZK proof against public inputs.
-//     Returns iss:sub as the key prefix.
+//     Returns "oauth:<iss>:<sub>" as the key prefix.
 func (g *GroupAuth) ValidateAuthProof(ctx context.Context, groupID string, proof *AuthProof) (string, error) {
 	// Check expiry.
 	if time.Now().After(time.Unix(int64(proof.Exp), 0)) {
@@ -585,7 +585,7 @@ func (g *GroupAuth) ValidateAuthProof(ctx context.Context, groupID string, proof
 		if err := verifyAuthKeySignature(scheme, pubkey, hash[:], proof.CertSignature); err != nil {
 			return "", fmt.Errorf("certificate signature verification failed: %w", err)
 		}
-		return proof.Identity, nil
+		return "authkey:" + proof.Identity, nil
 	}
 
 	// OAuth/ZK path.
@@ -629,7 +629,7 @@ func (g *GroupAuth) ValidateAuthProof(ctx context.Context, groupID string, proof
 		return "", fmt.Errorf("ZK proof invalid: %w", err)
 	}
 
-	return proof.Iss + ":" + proof.Sub, nil
+	return "oauth:" + proof.Iss + ":" + proof.Sub, nil
 }
 
 // discoverJWKSURI fetches the OpenID Connect discovery document for issuer and

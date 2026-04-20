@@ -1000,19 +1000,20 @@ func (n *Node) validateSessionRequest(
 		return nil, "", &httpErr{http.StatusUnauthorized, "session expired; re-authenticate"}
 	}
 
-	// Derive key_id. For OAuth sessions: iss:sub. For auth key sessions: identity.
+	// Derive key_id with a namespace prefix so OAuth and auth key paths can
+	// never collide. The prefix is internal — clients don't see or supply it.
 	var resolvedKeyID string
 	if info.Identity != "" {
-		// Auth key certificate session.
-		resolvedKeyID = info.Identity
+		// Auth key certificate session: "authkey:<identity>" or "authkey:<identity>:<suffix>"
+		resolvedKeyID = "authkey:" + info.Identity
 		if keySuffix != "" {
-			resolvedKeyID = info.Identity + ":" + keySuffix
+			resolvedKeyID = "authkey:" + info.Identity + ":" + keySuffix
 		}
 	} else {
-		// OAuth session.
-		resolvedKeyID = info.Iss + ":" + info.Sub
+		// OAuth session: "oauth:<iss>:<sub>" or "oauth:<iss>:<sub>:<suffix>"
+		resolvedKeyID = "oauth:" + info.Iss + ":" + info.Sub
 		if keySuffix != "" {
-			resolvedKeyID = info.Iss + ":" + info.Sub + ":" + keySuffix
+			resolvedKeyID = "oauth:" + info.Iss + ":" + info.Sub + ":" + keySuffix
 		}
 	}
 
