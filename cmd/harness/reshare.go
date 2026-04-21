@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os/exec"
 	"sync"
 	"time"
@@ -452,23 +451,11 @@ func RunRefresh(ctx context.Context, env *Env, clients []*Client, newKeyID func(
 	return nil
 }
 
-// getReshareStatus fetches GET /v1/reshare/{group_id} from a node.
+// getReshareStatus fetches POST /admin/reshare/status from a node.
 func getReshareStatus(ctx context.Context, c *Client, groupID string) (*ReshareStatus, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.node.API+"/v1/reshare/"+groupID, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
-	}
+	body, _ := json.Marshal(map[string]string{"group_id": groupID})
 	var status ReshareStatus
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+	if err := c.post(ctx, "/admin/reshare/status", body, &status); err != nil {
 		return nil, err
 	}
 	return &status, nil

@@ -440,9 +440,11 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := n.auth.ValidateAdminAuth(req.GroupID, &req); err != nil {
-		httpError(w, http.StatusUnauthorized, "admin auth failed: "+err.Error())
-		return
+	if n.auth.HasAuthKeys(req.GroupID) {
+		if err := n.auth.ValidateAdminAuth(req.GroupID, &req); err != nil {
+			httpError(w, http.StatusUnauthorized, "admin auth failed: "+err.Error())
+			return
+		}
 	}
 
 	keyIDs, err := n.km.ListKeys(req.GroupID)
@@ -1105,9 +1107,11 @@ func (n *Node) handleStartReshare(w http.ResponseWriter, r *http.Request) {
 	}
 	req.AdminAuth.GroupID = groupID
 
-	if err := n.auth.ValidateAdminAuth(groupID, &req.AdminAuth); err != nil {
-		httpError(w, http.StatusUnauthorized, "admin auth failed: "+err.Error())
-		return
+	if n.auth.HasAuthKeys(groupID) {
+		if err := n.auth.ValidateAdminAuth(groupID, &req.AdminAuth); err != nil {
+			httpError(w, http.StatusUnauthorized, "admin auth failed: "+err.Error())
+			return
+		}
 	}
 	concurrency := req.Concurrency
 	if concurrency < 1 {
@@ -1173,9 +1177,11 @@ func (n *Node) handleReshareStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := n.auth.ValidateAdminAuth(groupID, &req); err != nil {
-		httpError(w, http.StatusUnauthorized, "admin auth failed: "+err.Error())
-		return
+	if n.auth.HasAuthKeys(groupID) {
+		if err := n.auth.ValidateAdminAuth(groupID, &req); err != nil {
+			httpError(w, http.StatusUnauthorized, "admin auth failed: "+err.Error())
+			return
+		}
 	}
 
 	n.reshareJobsMu.RLock()
