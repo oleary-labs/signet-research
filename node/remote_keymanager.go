@@ -16,6 +16,8 @@ import (
 
 	"signet/kms/kmspb"
 	"signet/tss"
+
+	"go.uber.org/zap"
 )
 
 // RemoteKeyManager implements KeyManager by forwarding requests to an
@@ -25,11 +27,12 @@ type RemoteKeyManager struct {
 	conn   *grpc.ClientConn
 	client kmspb.KeyManagerClient
 	selfID tss.PartyID // this node's party ID (peer ID)
+	log    *zap.Logger
 }
 
 // NewRemoteKeyManager creates a RemoteKeyManager that connects to the KMS at
 // the given Unix socket path.
-func NewRemoteKeyManager(ctx context.Context, socket string, selfID tss.PartyID) (*RemoteKeyManager, error) {
+func NewRemoteKeyManager(ctx context.Context, socket string, selfID tss.PartyID, log *zap.Logger) (*RemoteKeyManager, error) {
 	conn, err := grpc.NewClient(
 		"unix://"+socket,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -43,6 +46,7 @@ func NewRemoteKeyManager(ctx context.Context, socket string, selfID tss.PartyID)
 		conn:   conn,
 		client: kmspb.NewKeyManagerClient(conn),
 		selfID: selfID,
+		log:    log,
 	}, nil
 }
 
@@ -258,13 +262,23 @@ func (rkm *RemoteKeyManager) bridgeSession(ctx context.Context, sessionID string
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		msgCount := 0
 		for {
 			select {
 			case msg, ok := <-sn.Incoming():
 				if !ok {
+					rkm.log.Debug("bridge: sn channel closed",
+						zap.String("session_id", sessionID),
+						zap.Int("messages_forwarded", msgCount))
 					stream.CloseSend()
 					return
 				}
+				msgCount++
+				rkm.log.Debug("bridge: peer→KMS",
+					zap.String("session_id", sessionID),
+					zap.String("from", string(msg.From)),
+					zap.Int("payload_len", len(msg.Data)),
+					zap.Int("msg_count", msgCount))
 				if err := stream.Send(&kmspb.SessionMessage{
 					SessionId: sessionID,
 					From:      string(msg.From),
@@ -277,6 +291,9 @@ func (rkm *RemoteKeyManager) bridgeSession(ctx context.Context, sessionID string
 					return
 				}
 			case <-bridgeCtx.Done():
+				rkm.log.Debug("bridge: context done",
+					zap.String("session_id", sessionID),
+					zap.Int("messages_forwarded", msgCount))
 				stream.CloseSend()
 				return
 			}
@@ -284,21 +301,38 @@ func (rkm *RemoteKeyManager) bridgeSession(ctx context.Context, sessionID string
 	}()
 
 	// Main goroutine: KMS → peer (read from KMS stream, send via SessionNetwork).
+	outCount := 0
 	for {
 		out, err := stream.Recv()
 		if err == io.EOF {
+			rkm.log.Debug("bridge: KMS stream EOF",
+				zap.String("session_id", sessionID),
+				zap.Int("kms_messages_sent", outCount))
 			break
 		}
 		if err != nil {
+			rkm.log.Debug("bridge: KMS stream error",
+				zap.String("session_id", sessionID),
+				zap.Int("kms_messages_sent", outCount),
+				zap.Error(err))
 			setErr(fmt.Errorf("recv from kms: %w", err))
 			break
 		}
 		// Capture session result if present.
 		if out.Result != nil {
+			rkm.log.Debug("bridge: KMS result received",
+				zap.String("session_id", sessionID),
+				zap.Int("kms_messages_sent", outCount))
 			result = out.Result
 		}
 		// Forward to peers (skip if this is a result-only message with no payload).
 		if len(out.Payload) > 0 || out.From != "" {
+			outCount++
+			rkm.log.Debug("bridge: KMS→peer",
+				zap.String("session_id", sessionID),
+				zap.String("to", out.To),
+				zap.Int("payload_len", len(out.Payload)),
+				zap.Int("out_count", outCount))
 			sn.Send(protoToTSSMessage(out))
 		}
 	}

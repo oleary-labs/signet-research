@@ -4,7 +4,7 @@
 # after running devnet-init and the deploy script.
 
 node_type: public
-log_level: info
+log_level: debug
 
 # KMS configuration
 use_kms: true

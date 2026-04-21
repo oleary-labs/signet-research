@@ -11,7 +11,7 @@ ExecStart={{ kms_bin }} {{ kms_socket }} {{ kms_data_dir }}
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65536
-Environment=RUST_LOG=kms_frost=info
+Environment=RUST_LOG=kms_frost={{ log_level | default('info') }}
 
 StandardOutput=journal
 StandardError=journal

@@ -12,6 +12,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"go.uber.org/zap"
+
 	"signet/kms/kmspb"
 )
 
@@ -55,7 +57,7 @@ func TestRemoteKeyManager_Connection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	rkm, err := NewRemoteKeyManager(ctx, socketPath, "test-party")
+	rkm, err := NewRemoteKeyManager(ctx, socketPath, "test-party", zap.NewNop())
 	if err != nil {
 		t.Fatalf("NewRemoteKeyManager: %v", err)
 	}
@@ -121,7 +123,7 @@ func TestRemoteKeyManager_StartKeygen(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	rkm, err := NewRemoteKeyManager(ctx, socketPath, "test-party")
+	rkm, err := NewRemoteKeyManager(ctx, socketPath, "test-party", zap.NewNop())
 	if err != nil {
 		t.Fatalf("NewRemoteKeyManager: %v", err)
 	}
