@@ -69,6 +69,8 @@ if $USE_KMS; then
     command -v cargo >/dev/null 2>&1 || die "'cargo' not found — install Rust (https://rustup.rs)"
     (cd "$REPO/kms-frost" && cargo build --release --quiet)
     cp "$REPO/kms-frost/target/release/kms-frost" "$BUILD/kms-frost"
+    # macOS invalidates adhoc code signatures on copy; re-sign.
+    codesign -s - "$BUILD/kms-frost" 2>/dev/null || true
 fi
 
 # --------------------------------------------------------------------------
