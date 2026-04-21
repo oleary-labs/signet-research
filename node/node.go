@@ -36,12 +36,13 @@ type GroupInfo struct {
 
 // Node owns a libp2p host, an HTTP API server, and threshold signing state.
 type Node struct {
-	cfg    *Config
-	host   *network.Host
-	server *http.Server
-	log    *zap.Logger
-	ctx    context.Context
-	cancel context.CancelFunc
+	cfg       *Config
+	host      *network.Host
+	server    *http.Server
+	log       *zap.Logger
+	ctx       context.Context
+	cancel    context.CancelFunc
+	startTime time.Time
 
 	km KeyManager // key management: LocalKeyManager (in-process) or RemoteKeyManager (KMS)
 
@@ -227,6 +228,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		log:            log,
 		ctx:            ctx,
 		cancel:         cancel,
+		startTime:      time.Now(),
 		km:             km,
 		keygenReady:    make(map[shardKey]chan struct{}),
 		groups:         make(map[string]*GroupInfo),
@@ -266,6 +268,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 	mux.HandleFunc("POST /admin/keys", n.handleListKeys)
 	mux.HandleFunc("POST /admin/reshare", n.handleStartReshare)
 	mux.HandleFunc("POST /admin/reshare/status", n.handleReshareStatus)
+	mux.HandleFunc("GET /debug/stats", n.handleDebugStats)
 	n.server = &http.Server{Addr: cfg.APIAddr, Handler: mux}
 
 	return n, nil
