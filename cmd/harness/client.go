@@ -144,6 +144,42 @@ func IsHTTPError(err error) *HTTPError {
 	return nil
 }
 
+// NodeStats is the response from GET /debug/stats.
+type NodeStats struct {
+	Goroutines      int     `json:"goroutines"`
+	HeapMB          float64 `json:"heap_mb"`
+	SysMB           float64 `json:"sys_mb"`
+	NumGC           uint32  `json:"num_gc"`
+	OpenFDs         int     `json:"open_fds"`
+	Uptime          string  `json:"uptime"`
+	PeerCount       int     `json:"peer_count"`
+	ConnectionCount int     `json:"connection_count"`
+	StreamCount     int     `json:"stream_count"`
+	InboundStreams   int     `json:"inbound_streams"`
+	OutboundStreams  int     `json:"outbound_streams"`
+}
+
+// DebugStats calls GET /debug/stats and returns the parsed response.
+func (c *Client) DebugStats(ctx context.Context) (*NodeStats, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.node.API+"/debug/stats", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("debug/stats: status %d", resp.StatusCode)
+	}
+	var stats NodeStats
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return nil, err
+	}
+	return &stats, nil
+}
+
 // ClientRing distributes requests across multiple clients in round-robin order.
 type ClientRing struct {
 	clients []*Client

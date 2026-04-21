@@ -98,6 +98,13 @@ func run() error {
 	}
 	fmt.Println("ok")
 
+	// Snapshot node stats before the test run.
+	before := snapshotStats(ctx, clients)
+	if len(before) > 0 {
+		fmt.Println("\n--- Node stats (before) ---")
+		printStatsTable(clients, before)
+	}
+
 	// Key ID generator — unique across runs via millisecond timestamp prefix.
 	var keySeq atomic.Uint64
 	keyPrefix := time.Now().UnixMilli()
@@ -193,5 +200,71 @@ func run() error {
 		return fmt.Errorf("unknown subcommand %q — use correctness, perf, scale, reshare, or refresh", subcommand)
 	}
 
+	// Snapshot node stats after the test run and print comparison.
+	after := snapshotStats(ctx, clients)
+	if len(after) > 0 {
+		fmt.Println("\n--- Node stats (after) ---")
+		printStatsTable(clients, after)
+		if len(before) > 0 {
+			fmt.Println("\n--- Delta ---")
+			printStatsDelta(clients, before, after)
+		}
+	}
+
 	return nil
+}
+
+// snapshotStats collects debug stats from all nodes. Returns a map of node name → stats.
+func snapshotStats(ctx context.Context, clients []*Client) map[string]*NodeStats {
+	stats := make(map[string]*NodeStats, len(clients))
+	for _, c := range clients {
+		s, err := c.DebugStats(ctx)
+		if err != nil {
+			continue // node may not support /debug/stats yet
+		}
+		stats[c.node.Name] = s
+	}
+	return stats
+}
+
+// printStatsTable prints a compact table of node stats.
+func printStatsTable(clients []*Client, stats map[string]*NodeStats) {
+	fmt.Printf("  %-8s %8s %8s %8s %6s %6s %8s\n",
+		"node", "gorout", "heap_mb", "sys_mb", "fds", "peers", "streams")
+	for _, c := range clients {
+		s, ok := stats[c.node.Name]
+		if !ok {
+			continue
+		}
+		fds := "-"
+		if s.OpenFDs >= 0 {
+			fds = fmt.Sprintf("%d", s.OpenFDs)
+		}
+		fmt.Printf("  %-8s %8d %8.1f %8.1f %6s %6d %8d\n",
+			c.node.Name, s.Goroutines, s.HeapMB, s.SysMB,
+			fds, s.PeerCount, s.StreamCount)
+	}
+}
+
+// printStatsDelta prints the change in key metrics between two snapshots.
+func printStatsDelta(clients []*Client, before, after map[string]*NodeStats) {
+	fmt.Printf("  %-8s %8s %8s %8s %8s\n",
+		"node", "Δgorout", "Δheap_mb", "Δfds", "Δstreams")
+	for _, c := range clients {
+		b, okB := before[c.node.Name]
+		a, okA := after[c.node.Name]
+		if !okB || !okA {
+			continue
+		}
+		dFDs := ""
+		if b.OpenFDs >= 0 && a.OpenFDs >= 0 {
+			dFDs = fmt.Sprintf("%+d", a.OpenFDs-b.OpenFDs)
+		}
+		fmt.Printf("  %-8s %+8d %+8.1f %8s %+8d\n",
+			c.node.Name,
+			a.Goroutines-b.Goroutines,
+			a.HeapMB-b.HeapMB,
+			dFDs,
+			a.StreamCount-b.StreamCount)
+	}
 }
