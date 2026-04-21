@@ -1029,7 +1029,23 @@ impl SessionInner {
                 mut r1_received,
                 broadcast_sent,
             } => {
-                // Only accept R1 from old parties.
+                // Try to decode as R1 first. If decode fails, this is likely
+                // an R2/R3 that arrived early — buffer for later.
+                let r1: ReshareR1Payload = match cbor_decode(payload) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return (
+                            SessionInner::ReshareR1 {
+                                session_id, params, is_old, is_new, polynomial, chain_key,
+                                old_scalars, new_scalars, self_old_scalar, self_new_scalar,
+                                old_secret, group_key, generation, r1_received, broadcast_sent,
+                            },
+                            Err(ProcessError::WrongRound(e)),
+                        );
+                    }
+                };
+
+                // Valid R1 — check sender is an old party and not a duplicate.
                 if !params.old_party_ids.contains(&from.to_string()) {
                     return (
                         SessionInner::ReshareR1 {
@@ -1050,20 +1066,6 @@ impl SessionInner {
                         Err(ProcessError::Invalid(format!("duplicate R1 from {from}"))),
                     );
                 }
-
-                let r1: ReshareR1Payload = match cbor_decode(payload) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return (
-                            SessionInner::ReshareR1 {
-                                session_id, params, is_old, is_new, polynomial, chain_key,
-                                old_scalars, new_scalars, self_old_scalar, self_new_scalar,
-                                old_secret, group_key, generation, r1_received, broadcast_sent,
-                            },
-                            Err(ProcessError::WrongRound(e)),
-                        );
-                    }
-                };
                 r1_received.insert(from.to_string(), r1);
 
                 // Not all R1 collected yet.
@@ -1206,6 +1208,22 @@ impl SessionInner {
                 chain_keys,
                 mut sub_shares,
             } => {
+                // Try decode first — if it fails, buffer for later round.
+                let r2: ReshareR2Payload = match cbor_decode(payload) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return (
+                            SessionInner::ReshareR2 {
+                                session_id, params, is_old, is_new, polynomial,
+                                old_scalars, new_scalars, self_new_scalar,
+                                group_key, generation, all_commitments, chain_keys, sub_shares,
+                            },
+                            Err(ProcessError::WrongRound(e)),
+                        );
+                    }
+                };
+
+                // Valid R2 — check sender and duplicates.
                 if !params.old_party_ids.contains(&from.to_string()) {
                     return (
                         SessionInner::ReshareR2 {
@@ -1226,20 +1244,6 @@ impl SessionInner {
                         Err(ProcessError::Invalid(format!("duplicate R2 from {from}"))),
                     );
                 }
-
-                let r2: ReshareR2Payload = match cbor_decode(payload) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return (
-                            SessionInner::ReshareR2 {
-                                session_id, params, is_old, is_new, polynomial,
-                                old_scalars, new_scalars, self_new_scalar,
-                                group_key, generation, all_commitments, chain_keys, sub_shares,
-                            },
-                            Err(ProcessError::WrongRound(e)),
-                        );
-                    }
-                };
 
                 let sub_share = match reshare::deserialize_scalar(&r2.sub_share) {
                     Ok(s) => s,
@@ -1354,6 +1358,21 @@ impl SessionInner {
                 chain_keys,
                 mut pub_shares,
             } => {
+                // Try decode first — if it fails, buffer for later.
+                let r3: ReshareR3Payload = match cbor_decode(payload) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return (
+                            SessionInner::ReshareR3 {
+                                session_id, params, new_scalars, self_new_scalar,
+                                group_key, generation, new_secret, chain_keys, pub_shares,
+                            },
+                            Err(ProcessError::WrongRound(e)),
+                        );
+                    }
+                };
+
+                // Valid R3 — check sender and duplicates.
                 if !params.new_party_ids.contains(&from.to_string()) {
                     return (
                         SessionInner::ReshareR3 {
@@ -1372,19 +1391,6 @@ impl SessionInner {
                         Err(ProcessError::Invalid(format!("duplicate R3 from {from}"))),
                     );
                 }
-
-                let r3: ReshareR3Payload = match cbor_decode(payload) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return (
-                            SessionInner::ReshareR3 {
-                                session_id, params, new_scalars, self_new_scalar,
-                                group_key, generation, new_secret, chain_keys, pub_shares,
-                            },
-                            Err(ProcessError::WrongRound(e)),
-                        );
-                    }
-                };
                 pub_shares.insert(from.to_string(), r3.verifying_share);
 
                 if pub_shares.len() < params.new_party_ids.len() {
@@ -2347,6 +2353,76 @@ mod tests {
             let msg = b"long-id sign after reshare!!!!!!";
             let (r, z) = run_sign(subset, msg, &mut owned);
             verify_signature(&group_key, msg, &r, &z);
+        }
+    }
+
+    #[test]
+    fn test_keygen_vs_reshare_commitment_format() {
+        // Verify that signing commitments from DKG-produced keys and
+        // reshare-produced keys have the same serialization format.
+        init_tracing();
+        let mut owned = make_storages(PARTIES5);
+
+        // Keygen 2-of-5.
+        let party_ids: Vec<String> = PARTIES5.iter().map(|s| s.to_string()).collect();
+        let mut sessions: HashMap<String, (Session, Storage)> = HashMap::new();
+        let mut initial_messages = Vec::new();
+        for pid in &party_ids {
+            let params = KeygenParams {
+                group_id: GROUP_ID.to_string(),
+                key_id: KEY_ID.to_string(),
+                party_id: pid.clone(),
+                party_ids: party_ids.clone(),
+                threshold: 2,
+            };
+            let (storage, _) = owned.remove(pid).unwrap();
+            let (session, output) =
+                Session::start_keygen(&format!("keygen-{pid}"), params).expect("start_keygen");
+            initial_messages.extend(output.messages);
+            sessions.insert(pid.clone(), (session, storage));
+        }
+        let results = route(initial_messages, &mut sessions);
+        assert_eq!(results.len(), 5);
+        for (pid, (_, storage)) in sessions {
+            let dir = tempfile::tempdir().unwrap();
+            owned.insert(pid, (storage, dir));
+        }
+
+        // Capture pre-reshare commitment sizes and format.
+        let mut pre_reshare = HashMap::new();
+        for pid in PARTIES5 {
+            let (storage, _) = owned.get(*pid).unwrap();
+            let stored = storage.get_key(GROUP_ID, KEY_ID).unwrap().unwrap();
+            let kp = frost::keys::KeyPackage::deserialize(&stored.key_package).unwrap();
+            let mut rng = rand::thread_rng();
+            let (_, c) = frost::round1::commit(kp.signing_share(), &mut rng);
+            let bytes = c.serialize().unwrap();
+            println!("pre-reshare  {pid}: kp={} pkp={} commitment={} bytes",
+                stored.key_package.len(), stored.public_key_package.len(), bytes.len());
+            pre_reshare.insert(*pid, (stored.key_package.len(), stored.public_key_package.len(), bytes.len()));
+        }
+
+        // Reshare.
+        run_reshare(PARTIES5, PARTIES5, 2, &mut owned);
+
+        // Capture post-reshare commitment sizes and format.
+        for pid in PARTIES5 {
+            let (storage, _) = owned.get(*pid).unwrap();
+            let stored = storage.get_key(GROUP_ID, KEY_ID).unwrap().unwrap();
+            let kp = frost::keys::KeyPackage::deserialize(&stored.key_package).unwrap();
+            let mut rng = rand::thread_rng();
+            let (_, c) = frost::round1::commit(kp.signing_share(), &mut rng);
+            let bytes = c.serialize().unwrap();
+            let (pre_kp, pre_pkp, pre_c) = pre_reshare[pid];
+            println!("post-reshare {pid}: kp={} pkp={} commitment={} bytes  (pre: kp={} pkp={} c={})",
+                stored.key_package.len(), stored.public_key_package.len(), bytes.len(),
+                pre_kp, pre_pkp, pre_c);
+
+            // Cross-deserialize: can a post-reshare node deserialize a pre-reshare commitment?
+            // (We can't test this directly since we consumed the pre-reshare commitments,
+            // but we can check that the sizes match.)
+            assert_eq!(bytes.len(), pre_c,
+                "party {pid}: commitment size changed after reshare ({} vs {})", bytes.len(), pre_c);
         }
     }
 }

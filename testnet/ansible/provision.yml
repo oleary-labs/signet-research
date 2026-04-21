@@ -91,6 +91,9 @@
         filters:
           "tag:Project": signet-testnet
           "tag:Node": "{{ item.name }}"
+          instance-state-name:
+            - pending
+            - running
       loop: "{{ nodes }}"
       loop_control:
         label: "{{ item.name }} ({{ item.region }})"

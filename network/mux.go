@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"sync"
 	"time"
 
@@ -161,14 +162,38 @@ func (mn *MuxNetwork) handleInbound(s libp2pnet.Stream) {
 }
 
 // send opens an ephemeral stream, writes a single muxEnvelope, and closes.
-// Yamux multiplexes streams over the existing TCP connection so there is no
-// new TCP handshake — only ~0.1ms of stream negotiation overhead.
+// Retries up to maxSendRetries times on failure with exponential backoff.
 func (mn *MuxNetwork) send(ctx context.Context, peerID peer.ID, sessionID string, msg *tss.Message) error {
 	env := &muxEnvelope{SessionID: sessionID, Msg: *msg}
 
-	// Use a per-send timeout so that congested yamux connections don't block
-	// the caller forever. The caller's context (session-scoped) may also
-	// cancel, whichever comes first.
+	const maxRetries = 3
+	backoff := 100 * time.Millisecond
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(backoff):
+				backoff *= 2
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		err := mn.sendOnce(ctx, peerID, env)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+
+	log.Printf("[mux] send failed after %d retries: session=%s peer=%s err=%v",
+		maxRetries, sessionID, peerID, lastErr)
+	return lastErr
+}
+
+// sendOnce opens an ephemeral stream, writes a single muxEnvelope, and closes.
+func (mn *MuxNetwork) sendOnce(ctx context.Context, peerID peer.ID, env *muxEnvelope) error {
 	sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -179,7 +204,7 @@ func (mn *MuxNetwork) send(ctx context.Context, peerID peer.ID, sessionID string
 	defer s.Close()
 
 	if err := writeMuxEnvelope(s, env); err != nil {
-		s.Reset() // signal error to remote
+		s.Reset()
 		return fmt.Errorf("mux write to %s: %w", peerID, err)
 	}
 	return nil
@@ -207,6 +232,7 @@ type MuxSession struct {
 }
 
 // Send implements tss.Network. Broadcasts are unicast to all other parties.
+// Send errors are logged but not returned (tss.Network interface has no error return).
 func (s *MuxSession) Send(msg *tss.Message) {
 	if msg.To == "" {
 		for _, pid := range s.parties {
@@ -215,23 +241,29 @@ func (s *MuxSession) Send(msg *tss.Message) {
 			}
 			peerID, ok := s.mn.host.PeerForParty(pid)
 			if !ok {
+				log.Printf("[mux] no peer for party %s in session %s", pid, s.sessionID)
 				continue
 			}
 			s.sendWG.Add(1)
-			go func(id peer.ID) {
+			go func(id peer.ID, party tss.PartyID) {
 				defer s.sendWG.Done()
-				s.mn.send(s.ctx, id, s.sessionID, msg)
-			}(peerID)
+				if err := s.mn.send(s.ctx, id, s.sessionID, msg); err != nil {
+					log.Printf("[mux] broadcast to %s failed: session=%s err=%v", party, s.sessionID, err)
+				}
+			}(peerID, pid)
 		}
 	} else {
 		peerID, ok := s.mn.host.PeerForParty(msg.To)
 		if !ok {
+			log.Printf("[mux] no peer for party %s in session %s", msg.To, s.sessionID)
 			return
 		}
 		s.sendWG.Add(1)
 		go func() {
 			defer s.sendWG.Done()
-			s.mn.send(s.ctx, peerID, s.sessionID, msg)
+			if err := s.mn.send(s.ctx, peerID, s.sessionID, msg); err != nil {
+				log.Printf("[mux] unicast to %s failed: session=%s err=%v", msg.To, s.sessionID, err)
+			}
 		}()
 	}
 }

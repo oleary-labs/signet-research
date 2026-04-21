@@ -295,8 +295,8 @@ func (n *Node) runReshareSession(ctx context.Context, groupID, keyID string) (er
 	}
 
 	// Protocol succeeded locally. Broadcast commit to all participants so they
-	// promote their pending results to active. Use a fresh timeout — the session
-	// context may be nearly expired.
+	// promote their pending results to active. All participants must ACK before
+	// we commit locally — otherwise we'd have mixed-generation key material.
 	commitCtx, commitCancel := context.WithTimeout(ctx, 15*time.Second)
 	commitErr := n.broadcastCoord(commitCtx, allParties, coordMsg{
 		Type:         msgReshareCommit,
@@ -306,15 +306,14 @@ func (n *Node) runReshareSession(ctx context.Context, groupID, keyID string) (er
 	})
 	commitCancel()
 	if commitErr != nil {
-		n.log.Warn("reshare: commit broadcast failed, committing locally",
-			zap.String("group_id", groupID),
-			zap.String("key_id", keyID),
-			zap.Error(commitErr))
-		// Commit locally even if broadcast fails — participants that missed the
-		// commit will get it on retry via the IsKeyDone+rollback path.
+		// At least one participant failed to commit. Discard our own pending
+		// result so all nodes stay on the current generation. The coordinator
+		// retry loop will attempt the reshare again for this key.
+		n.km.DiscardPendingReshare(groupID, keyID)
+		return fmt.Errorf("commit aborted (participant failure): %w", commitErr)
 	}
 
-	// Commit locally: archive old share, promote pending to active.
+	// All participants committed — safe to commit locally.
 	if err := n.km.CommitReshare(groupID, keyID); err != nil {
 		n.log.Error("reshare: local commit failed",
 			zap.String("group_id", groupID),

@@ -35,6 +35,13 @@
           host_vars have peer_id, and SEPOLIA_RPC_URL + FACTORY_ADDRESS
           are set in the environment.
 
+    - name: Create signet user early (needed for /run/signet ownership)
+      user:
+        name: "{{ signetd_user | default('signet') }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
     - name: Create /run/signet for KMS socket
       file:
         path: /run/signet
