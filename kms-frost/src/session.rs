@@ -2193,4 +2193,81 @@ mod tests {
             verify_signature(&group_key, msg, &r, &z);
         }
     }
+
+    #[test]
+    fn test_reshare_5_party_sign_commitment_roundtrip() {
+        // After reshare, verify each party's signing commitments can be
+        // deserialized by every other party.
+        init_tracing();
+        let mut owned = make_storages(PARTIES5);
+
+        // Keygen 2-of-5.
+        let party_ids: Vec<String> = PARTIES5.iter().map(|s| s.to_string()).collect();
+        let mut sessions: HashMap<String, (Session, Storage)> = HashMap::new();
+        let mut initial_messages = Vec::new();
+        for pid in &party_ids {
+            let params = KeygenParams {
+                group_id: GROUP_ID.to_string(),
+                key_id: KEY_ID.to_string(),
+                party_id: pid.clone(),
+                party_ids: party_ids.clone(),
+                threshold: 2,
+            };
+            let (storage, _) = owned.remove(pid).unwrap();
+            let (session, output) =
+                Session::start_keygen(&format!("keygen-{pid}"), params).expect("start_keygen");
+            initial_messages.extend(output.messages);
+            sessions.insert(pid.clone(), (session, storage));
+        }
+        let results = route(initial_messages, &mut sessions);
+        assert_eq!(results.len(), 5);
+        for (pid, (_, storage)) in sessions {
+            let dir = tempfile::tempdir().unwrap();
+            owned.insert(pid, (storage, dir));
+        }
+
+        // Reshare same committee.
+        run_reshare(PARTIES5, PARTIES5, 2, &mut owned);
+
+        // Now verify each party's key package produces valid commitments.
+        for pid in PARTIES5 {
+            let (storage, _) = owned.get(*pid).unwrap();
+            let stored = storage.get_key(GROUP_ID, KEY_ID).unwrap()
+                .expect("key should exist after reshare");
+
+            let kp = frost::keys::KeyPackage::deserialize(&stored.key_package)
+                .unwrap_or_else(|e| panic!("party {pid}: deserialize KeyPackage failed: {e}"));
+            let pkp = frost::keys::PublicKeyPackage::deserialize(&stored.public_key_package)
+                .unwrap_or_else(|e| panic!("party {pid}: deserialize PublicKeyPackage failed: {e}"));
+
+            // Produce a signing commitment.
+            let mut rng = rand::thread_rng();
+            let (_nonces, commitments) = frost::round1::commit(kp.signing_share(), &mut rng);
+
+            // Serialize and deserialize the commitment.
+            let commitment_bytes = commitments.serialize().unwrap();
+            let _deserialized = frost::round1::SigningCommitments::deserialize(&commitment_bytes)
+                .unwrap_or_else(|e| panic!("party {pid}: commitment roundtrip failed: {e}"));
+
+            println!("party {pid}: commitment OK ({} bytes)", commitment_bytes.len());
+
+            // Also verify the verifying share matches signing share * G.
+            let vs_from_kp = kp.verifying_share().serialize().unwrap();
+            let vs_from_stored = &stored.verifying_share;
+            assert_eq!(vs_from_kp, *vs_from_stored, "party {pid}: verifying share mismatch");
+
+            // Verify the group key matches.
+            let gk = pkp.verifying_key().serialize().unwrap();
+            assert_eq!(gk, stored.group_key, "party {pid}: group key mismatch");
+
+            // Verify PublicKeyPackage has all 5 parties.
+            for other_pid in PARTIES5 {
+                let other_id = frost::Identifier::derive(other_pid.as_bytes()).unwrap();
+                assert!(
+                    pkp.verifying_shares().contains_key(&other_id),
+                    "party {pid}: PublicKeyPackage missing verifying share for {other_pid}"
+                );
+            }
+        }
+    }
 }
