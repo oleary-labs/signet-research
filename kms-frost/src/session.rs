@@ -2270,4 +2270,64 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_reshare_5_party_long_ids() {
+        // Use realistic libp2p-style party IDs to catch any ID-length issues.
+        init_tracing();
+        let long_parties: &[&str] = &[
+            "16Uiu2HAm2XVCtNtTmLc2VdAPK1grfgtQhAQb3jJDrBMwMnDGaKKj",
+            "16Uiu2HAm4HoJbixprx1pT6jdWQ1N8YQicQc3bUHCxP3M953Efk4B",
+            "16Uiu2HAmEa6cnqAqzZT9KVqRSB66jxYr14DTeVMe7gUeNihRtuSU",
+            "16Uiu2HAkwfzv7UhN7jAfdWu1KWKYp2N9nysxqxJEkg6guovSEW8B",
+            "16Uiu2HAmUE9XC2NrpD8g2VETj5vuVKBR7sbvrHQSi21B87gRwRTs",
+        ];
+        let mut owned = make_storages(long_parties);
+
+        // Keygen 2-of-5.
+        let party_ids: Vec<String> = long_parties.iter().map(|s| s.to_string()).collect();
+        let mut sessions: HashMap<String, (Session, Storage)> = HashMap::new();
+        let mut initial_messages = Vec::new();
+        for pid in &party_ids {
+            let params = KeygenParams {
+                group_id: GROUP_ID.to_string(),
+                key_id: KEY_ID.to_string(),
+                party_id: pid.clone(),
+                party_ids: party_ids.clone(),
+                threshold: 2,
+            };
+            let (storage, _) = owned.remove(pid).unwrap();
+            let (session, output) =
+                Session::start_keygen(&format!("keygen-{pid}"), params).expect("start_keygen");
+            initial_messages.extend(output.messages);
+            sessions.insert(pid.clone(), (session, storage));
+        }
+        let results = route(initial_messages, &mut sessions);
+        assert_eq!(results.len(), 5);
+        let group_key = results[0].group_key.clone().unwrap();
+        for (pid, (_, storage)) in sessions {
+            let dir = tempfile::tempdir().unwrap();
+            owned.insert(pid, (storage, dir));
+        }
+
+        // Sign before reshare.
+        let msg1 = b"long-id sign before reshare!!!!!";
+        let (r1, z1) = run_sign(&[long_parties[0], long_parties[2]], msg1, &mut owned);
+        verify_signature(&group_key, msg1, &r1, &z1);
+
+        // Reshare same committee.
+        let reshare_gk = run_reshare(long_parties, long_parties, 2, &mut owned);
+        assert_eq!(group_key, reshare_gk);
+
+        // Sign after reshare with multiple subsets.
+        for subset in &[
+            &[long_parties[0], long_parties[1]][..],
+            &[long_parties[2], long_parties[4]][..],
+            &[long_parties[1], long_parties[3]][..],
+        ] {
+            let msg = b"long-id sign after reshare!!!!!!";
+            let (r, z) = run_sign(subset, msg, &mut owned);
+            verify_signature(&group_key, msg, &r, &z);
+        }
+    }
 }
