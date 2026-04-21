@@ -230,7 +230,7 @@ func (n *Node) runReshareSession(ctx context.Context, groupID, keyID string) (er
 		allParties = append(allParties, p)
 	}
 
-	sessCtx, sessCancel := context.WithTimeout(ctx, 60*time.Second)
+	sessCtx, sessCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer sessCancel()
 
 	sn := n.reshareMux.Session(sessCtx, sessID, allParties)
@@ -502,7 +502,7 @@ func (n *Node) runReshareBatch(ctx context.Context, groupID string, job *Reshare
 	}
 
 	// Send one coord message with all keys in this batch.
-	batchCtx, batchCancel := context.WithTimeout(ctx, 30*time.Second)
+	batchCtx, batchCancel := context.WithTimeout(ctx, 15*time.Second)
 	err := n.broadcastCoord(batchCtx, allParties, coordMsg{
 		Type:         msgReshareBatch,
 		GroupID:      groupID,
@@ -536,7 +536,7 @@ func (n *Node) runReshareBatch(ctx context.Context, groupID string, job *Reshare
 		}
 
 		sessID := reshareSessionID(groupID, bk.KeyID, bk.Nonce)
-		sessCtx, sessCancel := context.WithTimeout(ctx, 60*time.Second)
+		sessCtx, sessCancel := context.WithTimeout(ctx, 15*time.Second)
 		sn := n.reshareMux.Session(sessCtx, sessID, allParties)
 
 		result, err := n.km.RunReshare(sessCtx, ReshareParams{
