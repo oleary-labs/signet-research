@@ -10,6 +10,7 @@ use frost::keys::dkg;
 use frost::{Identifier, round1, round2};
 use rand::rngs::ThreadRng;
 use rand::RngCore;
+use sha2::Digest;
 use tracing::debug;
 
 use crate::params::{KeygenParams, SignParams};
@@ -428,6 +429,16 @@ impl SessionInner {
                     params.group_id, params.key_id
                 )
             })?;
+
+        debug!(
+            key_id = params.key_id.as_str(),
+            kp_len = stored.key_package.len(),
+            pkp_len = stored.public_key_package.len(),
+            kp_hash = %hex::encode(&sha2::Sha256::digest(&stored.key_package)[..8]),
+            pkp_hash = %hex::encode(&sha2::Sha256::digest(&stored.public_key_package)[..8]),
+            generation = stored.generation,
+            "sign: loading key from storage"
+        );
 
         let key_package = frost::keys::KeyPackage::deserialize(&stored.key_package)
             .map_err(|e| format!("deserialize key package: {e}"))?;
@@ -1458,12 +1469,20 @@ impl SessionInner {
 
                 // Store as pending (the Go layer will call CommitReshare to promote).
                 let stored = StoredKey {
-                    key_package: kp_bytes,
-                    public_key_package: pkp_bytes,
+                    key_package: kp_bytes.clone(),
+                    public_key_package: pkp_bytes.clone(),
                     group_key: group_key.clone(),
                     verifying_share: vs_bytes.clone(),
                     generation: generation + 1,
                 };
+                debug!(
+                    key_id = params.key_id.as_str(),
+                    kp_len = kp_bytes.len(),
+                    pkp_len = pkp_bytes.len(),
+                    kp_hash = %hex::encode(&sha2::Sha256::digest(&kp_bytes)[..8]),
+                    pkp_hash = %hex::encode(&sha2::Sha256::digest(&pkp_bytes)[..8]),
+                    "reshare: storing pending key"
+                );
                 if let Err(e) = storage.put_pending(&params.group_id, &params.key_id, &stored) {
                     return (SessionInner::Completed, Err(ProcessError::Invalid(format!("persist pending reshare: {e}"))));
                 }
