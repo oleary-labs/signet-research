@@ -151,11 +151,11 @@ func (sn *SessionNetwork) Next() <-chan *tss.Message {
 }
 
 // Close waits for all in-flight sends to complete, then removes the session's
-// stream handler and closes the incoming channel. Waiting before canceling
-// the context ensures sendTo goroutines aren't interrupted mid-send.
+// stream handler. The incoming channel is NOT closed — readers exit via
+// context cancellation. This avoids a race between handleStream goroutines
+// writing to the channel and Close() closing it.
 func (sn *SessionNetwork) Close() {
 	sn.sendWG.Wait()
 	sn.cancel()
 	sn.host.LibP2PHost().RemoveStreamHandler(sn.protocolID)
-	close(sn.incoming)
 }

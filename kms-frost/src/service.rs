@@ -149,13 +149,12 @@ impl KeyManager for KmsService {
                 }
             };
 
-            // Process the first message.
+            // Run the message loop. When it exits for any reason (completion,
+            // error, stream disconnect), clean up the session from the map.
             let mut msgs_to_process = vec![first_msg];
 
-            loop {
-                // Process all queued messages.
+            'outer: loop {
                 for msg in msgs_to_process.drain(..) {
-                    // Lock only this session — other sessions process concurrently.
                     let mut session = session_arc.lock().await;
                     let step_result =
                         session.process_message(&msg.from, &msg.to, &msg.payload, &storage);
@@ -172,7 +171,7 @@ impl KeyManager for KmsService {
                                     result: None,
                                 };
                                 if tx.send(Ok(proto_msg)).await.is_err() {
-                                    return;
+                                    break 'outer;
                                 }
                             }
 
@@ -185,29 +184,29 @@ impl KeyManager for KmsService {
                                     result: Some(KmsService::to_proto_result(r)),
                                 };
                                 let _ = tx.send(Ok(result_msg)).await;
-                                sessions.lock().await.remove(&session_id);
-                                return;
+                                break 'outer;
                             }
                         }
                         Err(e) => {
                             warn!(session_id = %session_id, error = %e, "process_message error");
                             let _ = tx.send(Err(Status::internal(e))).await;
-                            sessions.lock().await.remove(&session_id);
-                            return;
+                            break 'outer;
                         }
                     }
                 }
 
-                // Read the next message from the stream.
                 match in_stream.message().await {
                     Ok(Some(msg)) => msgs_to_process.push(msg),
-                    Ok(None) => return,
+                    Ok(None) => break,
                     Err(e) => {
                         warn!(error = %e, "process_message stream error");
-                        return;
+                        break;
                     }
                 }
             }
+
+            // Always clean up: remove session from map on any exit path.
+            sessions.lock().await.remove(&session_id);
         });
 
         Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
