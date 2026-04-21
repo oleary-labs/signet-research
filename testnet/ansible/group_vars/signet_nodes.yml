@@ -5,3 +5,9 @@
 
 node_type: public
 log_level: info
+
+# KMS configuration
+use_kms: true
+kms_bin: /usr/local/bin/kms-frost
+kms_socket: /run/signet/kms.sock
+kms_data_dir: /opt/signet/kms-data

@@ -1,0 +1,21 @@
+[Unit]
+Description=Signet FROST Key Management Service
+Before=signetd.service
+
+[Service]
+Type=simple
+User={{ signetd_user }}
+Group={{ signetd_user }}
+ExecStartPre=/bin/rm -f {{ kms_socket }}
+ExecStart={{ kms_bin }} {{ kms_socket }} {{ kms_data_dir }}
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+Environment=RUST_LOG=kms_frost=info
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kms-frost
+
+[Install]
+WantedBy=multi-user.target

@@ -11,3 +11,6 @@ bootstrap_peers:
 node_type: {{ node_type }}
 eth_rpc: {{ eth_rpc }}
 factory_address: {{ factory_address }}
+{% if use_kms | default(false) %}
+kms_socket: {{ kms_socket }}
+{% endif %}

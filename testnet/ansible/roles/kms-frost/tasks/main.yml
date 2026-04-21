@@ -1,0 +1,39 @@
+---
+# roles/kms-frost/tasks/main.yml — Deploy kms-frost alongside signetd.
+
+- name: Create KMS data directory
+  become: true
+  file:
+    path: "{{ kms_data_dir }}"
+    state: directory
+    owner: "{{ signetd_user }}"
+    group: "{{ signetd_user }}"
+    mode: "0700"
+
+- name: Upload kms-frost binary
+  become: true
+  copy:
+    src: "{{ local_kms_binary_path | default('../../../../build/kms-frost-linux-amd64') }}"
+    dest: "{{ kms_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: restart kms-frost
+
+- name: Install kms-frost systemd unit
+  become: true
+  template:
+    src: kms-frost.service.j2
+    dest: /etc/systemd/system/kms-frost.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart kms-frost
+
+- name: Enable and start kms-frost
+  become: true
+  systemd:
+    name: kms-frost
+    enabled: true
+    state: started
+    daemon_reload: true

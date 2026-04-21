@@ -7,6 +7,7 @@
 #   ansible-playbook manage.yml -e action=restart
 #   ansible-playbook manage.yml -e action=status
 #   ansible-playbook manage.yml -e action=logs
+#   ansible-playbook manage.yml -e action=logs-kms
 #   ansible-playbook manage.yml -e action=clean
 
 - name: "Manage signetd ({{ action | default('status') }})"
@@ -21,7 +22,20 @@
         state: stopped
       when: action == "stop"
 
+    - name: Stop kms-frost
+      systemd:
+        name: kms-frost
+        state: stopped
+      when: action == "stop" and use_kms | default(false) | bool
+      failed_when: false
+
     # ---- Start ----
+    - name: Start kms-frost
+      systemd:
+        name: kms-frost
+        state: started
+      when: action == "start" and use_kms | default(false) | bool
+
     - name: Start signetd
       systemd:
         name: signetd
@@ -29,6 +43,12 @@
       when: action == "start"
 
     # ---- Restart ----
+    - name: Restart kms-frost
+      systemd:
+        name: kms-frost
+        state: restarted
+      when: action == "restart" and use_kms | default(false) | bool
+
     - name: Restart signetd
       systemd:
         name: signetd
@@ -43,22 +63,46 @@
       failed_when: false
       when: action | default("status") == "status"
 
-    - name: Show status
+    - name: Show signetd status
       debug:
         msg: "{{ status_out.stdout_lines }}"
       when: action | default("status") == "status" and status_out is defined
 
+    - name: Check kms-frost status
+      command: systemctl status kms-frost --no-pager
+      register: kms_status_out
+      changed_when: false
+      failed_when: false
+      when: action | default("status") == "status" and use_kms | default(false) | bool
+
+    - name: Show kms-frost status
+      debug:
+        msg: "{{ kms_status_out.stdout_lines }}"
+      when: action | default("status") == "status" and use_kms | default(false) | bool and kms_status_out is defined
+
     # ---- Logs ----
-    - name: Fetch recent logs
+    - name: Fetch recent signetd logs
       command: journalctl -u signetd --no-pager -n {{ log_lines | default(50) }}
       register: log_out
       changed_when: false
       when: action == "logs"
 
-    - name: Show logs
+    - name: Show signetd logs
       debug:
         msg: "{{ log_out.stdout_lines }}"
       when: action == "logs" and log_out is defined
+
+    # ---- KMS Logs ----
+    - name: Fetch recent kms-frost logs
+      command: journalctl -u kms-frost --no-pager -n {{ log_lines | default(50) }}
+      register: kms_log_out
+      changed_when: false
+      when: action == "logs-kms"
+
+    - name: Show kms-frost logs
+      debug:
+        msg: "{{ kms_log_out.stdout_lines }}"
+      when: action == "logs-kms" and kms_log_out is defined
 
     # ---- Clean ----
     - name: Stop signetd before clean
@@ -68,13 +112,20 @@
       when: action == "clean"
       failed_when: false
 
-    - name: Remove data directory
+    - name: Stop kms-frost before clean
+      systemd:
+        name: kms-frost
+        state: stopped
+      when: action == "clean" and use_kms | default(false) | bool
+      failed_when: false
+
+    - name: Remove signetd data directory
       file:
         path: "{{ signetd_data_dir }}"
         state: absent
       when: action == "clean"
 
-    - name: Recreate data directory
+    - name: Recreate signetd data directory
       file:
         path: "{{ signetd_data_dir }}"
         state: directory
@@ -82,3 +133,18 @@
         group: "{{ signetd_user }}"
         mode: "0755"
       when: action == "clean"
+
+    - name: Remove KMS data directory
+      file:
+        path: "{{ kms_data_dir }}"
+        state: absent
+      when: action == "clean" and use_kms | default(false) | bool
+
+    - name: Recreate KMS data directory
+      file:
+        path: "{{ kms_data_dir }}"
+        state: directory
+        owner: "{{ signetd_user }}"
+        group: "{{ signetd_user }}"
+        mode: "0700"
+      when: action == "clean" and use_kms | default(false) | bool
