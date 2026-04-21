@@ -2133,4 +2133,64 @@ mod tests {
         let (r2, z2) = run_sign(&["peer-A", "peer-C"], msg2, &mut owned);
         verify_signature(&group_key, msg2, &r2, &z2);
     }
+
+    // =======================================================================
+    // Reshare: 5-party same committee (matches testnet configuration)
+    // =======================================================================
+
+    const PARTIES5: &[&str] = &["peer-A", "peer-B", "peer-C", "peer-D", "peer-E"];
+
+    #[test]
+    fn test_reshare_5_of_5_same_committee() {
+        init_tracing();
+        let mut owned = make_storages(PARTIES5);
+
+        // Keygen: 2-of-5.
+        let party_ids: Vec<String> = PARTIES5.iter().map(|s| s.to_string()).collect();
+        let mut sessions: HashMap<String, (Session, Storage)> = HashMap::new();
+        let mut initial_messages = Vec::new();
+        for pid in &party_ids {
+            let params = KeygenParams {
+                group_id: GROUP_ID.to_string(),
+                key_id: KEY_ID.to_string(),
+                party_id: pid.clone(),
+                party_ids: party_ids.clone(),
+                threshold: 2,
+            };
+            let (storage, _) = owned.remove(pid).unwrap();
+            let (session, output) =
+                Session::start_keygen(&format!("keygen-{pid}"), params).expect("start_keygen");
+            initial_messages.extend(output.messages);
+            sessions.insert(pid.clone(), (session, storage));
+        }
+        let results = route(initial_messages, &mut sessions);
+        assert_eq!(results.len(), 5);
+        let group_key = results[0].group_key.clone().unwrap();
+        for (pid, (_, storage)) in sessions {
+            let dir = tempfile::tempdir().unwrap();
+            owned.insert(pid, (storage, dir));
+        }
+
+        // Sign before reshare.
+        let msg1 = b"5-party sign before reshare!!!!!";
+        let (r1, z1) = run_sign(&["peer-A", "peer-B"], msg1, &mut owned);
+        verify_signature(&group_key, msg1, &r1, &z1);
+
+        // Reshare: same committee, same threshold.
+        let reshare_group_key = run_reshare(PARTIES5, PARTIES5, 2, &mut owned);
+        assert_eq!(group_key, reshare_group_key, "reshare must preserve group key");
+
+        // Sign after reshare with all 2-of-5 subsets.
+        let subsets: &[&[&str]] = &[
+            &["peer-A", "peer-B"],
+            &["peer-A", "peer-E"],
+            &["peer-C", "peer-D"],
+            &["peer-B", "peer-E"],
+        ];
+        for subset in subsets {
+            let msg = b"5-party sign after reshare!!!!!!";
+            let (r, z) = run_sign(subset, msg, &mut owned);
+            verify_signature(&group_key, msg, &r, &z);
+        }
+    }
 }

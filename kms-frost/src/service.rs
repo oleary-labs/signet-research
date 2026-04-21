@@ -15,9 +15,13 @@ use crate::session::{OutgoingMessage, Session, StepOutput};
 use crate::storage::Storage;
 
 /// Shared state for the KMS service.
+///
+/// Sessions use per-session locking (Arc<Mutex<Session>>) so that concurrent
+/// sessions don't block each other. The session map itself uses a separate
+/// lock only for insert/remove/lookup — never held during message processing.
 pub struct KmsService {
     storage: Arc<Storage>,
-    sessions: Arc<Mutex<HashMap<String, Session>>>,
+    sessions: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<Session>>>>>,
 }
 
 impl KmsService {
@@ -91,8 +95,11 @@ impl KeyManager for KmsService {
             }
         };
 
-        // Store the session.
-        self.sessions.lock().await.insert(session_id, session);
+        // Store the session with its own lock.
+        self.sessions.lock().await.insert(
+            session_id,
+            Arc::new(tokio::sync::Mutex::new(session)),
+        );
 
         let outgoing = Self::to_proto_messages(output.messages);
 
@@ -113,21 +120,23 @@ impl KeyManager for KmsService {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
         tokio::spawn(async move {
-            loop {
-                let msg_result = in_stream.message().await;
-                let msg = match msg_result {
-                    Ok(Some(msg)) => msg,
-                    Ok(None) => return,
-                    Err(e) => {
-                        warn!(error = %e, "process_message stream error");
-                        return;
-                    }
-                };
-                let session_id = msg.session_id.clone();
+            // Read the first message to learn the session ID, then grab a
+            // per-session lock from the map. The map lock is held only for
+            // the lookup — never during message processing.
+            let first_msg = match in_stream.message().await {
+                Ok(Some(msg)) => msg,
+                Ok(None) => return,
+                Err(e) => {
+                    warn!(error = %e, "process_message: no first message");
+                    return;
+                }
+            };
+            let session_id = first_msg.session_id.clone();
 
-                let mut sessions_guard = sessions.lock().await;
-                let session = match sessions_guard.get_mut(&session_id) {
-                    Some(s) => s,
+            let session_arc = {
+                let sessions_guard = sessions.lock().await;
+                match sessions_guard.get(&session_id) {
+                    Some(s) => Arc::clone(s),
                     None => {
                         warn!(session_id = %session_id, "unknown session");
                         let _ = tx
@@ -137,49 +146,64 @@ impl KeyManager for KmsService {
                             .await;
                         return;
                     }
-                };
+                }
+            };
 
-                let step_result =
-                    session.process_message(&msg.from, &msg.to, &msg.payload, &storage);
-                // Drop the lock before sending on the channel.
-                drop(sessions_guard);
+            // Process the first message.
+            let mut msgs_to_process = vec![first_msg];
 
-                match step_result {
-                    Ok(StepOutput { messages, result }) => {
-                        // Send outgoing messages to peers.
-                        for out in messages {
-                            let proto_msg = SessionMessage {
-                                session_id: out.session_id,
-                                from: out.from,
-                                to: out.to,
-                                payload: out.payload,
-                                result: None,
-                            };
-                            if tx.send(Ok(proto_msg)).await.is_err() {
-                                return; // client disconnected
+            loop {
+                // Process all queued messages.
+                for msg in msgs_to_process.drain(..) {
+                    // Lock only this session — other sessions process concurrently.
+                    let mut session = session_arc.lock().await;
+                    let step_result =
+                        session.process_message(&msg.from, &msg.to, &msg.payload, &storage);
+                    drop(session);
+
+                    match step_result {
+                        Ok(StepOutput { messages, result }) => {
+                            for out in messages {
+                                let proto_msg = SessionMessage {
+                                    session_id: out.session_id,
+                                    from: out.from,
+                                    to: out.to,
+                                    payload: out.payload,
+                                    result: None,
+                                };
+                                if tx.send(Ok(proto_msg)).await.is_err() {
+                                    return;
+                                }
+                            }
+
+                            if let Some(r) = result {
+                                let result_msg = SessionMessage {
+                                    session_id: session_id.clone(),
+                                    from: String::new(),
+                                    to: String::new(),
+                                    payload: vec![],
+                                    result: Some(KmsService::to_proto_result(r)),
+                                };
+                                let _ = tx.send(Ok(result_msg)).await;
+                                sessions.lock().await.remove(&session_id);
+                                return;
                             }
                         }
-
-                        // If session produced a result, send it and close.
-                        if let Some(r) = result {
-                            let result_msg = SessionMessage {
-                                session_id: session_id.clone(),
-                                from: String::new(),
-                                to: String::new(),
-                                payload: vec![],
-                                result: Some(KmsService::to_proto_result(r)),
-                            };
-                            let _ = tx.send(Ok(result_msg)).await;
-
-                            // Clean up completed session.
+                        Err(e) => {
+                            warn!(session_id = %session_id, error = %e, "process_message error");
+                            let _ = tx.send(Err(Status::internal(e))).await;
                             sessions.lock().await.remove(&session_id);
                             return;
                         }
                     }
+                }
+
+                // Read the next message from the stream.
+                match in_stream.message().await {
+                    Ok(Some(msg)) => msgs_to_process.push(msg),
+                    Ok(None) => return,
                     Err(e) => {
-                        warn!(session_id = %session_id, error = %e, "process_message error");
-                        let _ = tx.send(Err(Status::internal(e))).await;
-                        sessions.lock().await.remove(&session_id);
+                        warn!(error = %e, "process_message stream error");
                         return;
                     }
                 }
