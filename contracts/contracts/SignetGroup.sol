@@ -54,6 +54,15 @@ contract SignetGroup is Initializable, ISignetGroup {
     uint256[50] private __gap;
 
     // -------------------------------------------------------------------------
+    // Modifiers
+    // -------------------------------------------------------------------------
+
+    modifier onlyManager() {
+        require(msg.sender == manager, "not manager");
+        _;
+    }
+
+    // -------------------------------------------------------------------------
     // Initializer
     // -------------------------------------------------------------------------
 
@@ -108,8 +117,7 @@ contract SignetGroup is Initializable, ISignetGroup {
     // -------------------------------------------------------------------------
 
     /// @inheritdoc ISignetGroup
-    function inviteNode(address node) external {
-        require(msg.sender == manager, "not manager");
+    function inviteNode(address node) external onlyManager {
         ISignetFactory.NodeInfo memory info = ISignetFactory(factory).getNode(node);
         require(info.registered, "node not registered");
         require(nodeStatus[node] == NodeStatus.None, "already in group");
@@ -161,10 +169,7 @@ contract SignetGroup is Initializable, ISignetGroup {
     function cancelRemoval(address node) external {
         RemovalRequest memory req = _removalRequests[node];
         require(req.executeAfter != 0, "no queued removal");
-        require(
-            msg.sender == manager || msg.sender == req.initiator,
-            "not manager or initiator"
-        );
+        require(msg.sender == req.initiator, "not initiator");
         delete _removalRequests[node];
         emit RemovalCancelled(node, msg.sender);
     }
@@ -181,8 +186,7 @@ contract SignetGroup is Initializable, ISignetGroup {
     }
 
     /// @inheritdoc ISignetGroup
-    function transferManager(address newManager) external {
-        require(msg.sender == manager, "not manager");
+    function transferManager(address newManager) external onlyManager {
         address old = manager;
         manager = newManager;
         emit ManagerTransferred(old, newManager);
@@ -193,8 +197,7 @@ contract SignetGroup is Initializable, ISignetGroup {
     // -------------------------------------------------------------------------
 
     /// @inheritdoc ISignetGroup
-    function addIssuer(string calldata issuer, string[] calldata clientIds) external {
-        require(msg.sender == manager, "not manager");
+    function addIssuer(string calldata issuer, string[] calldata clientIds) external onlyManager {
         bytes32 h = keccak256(abi.encodePacked(issuer));
         require(_issuerHashIndex[h] == 0, "issuer already exists");
 
@@ -206,8 +209,7 @@ contract SignetGroup is Initializable, ISignetGroup {
     }
 
     /// @inheritdoc ISignetGroup
-    function removeIssuer(bytes32 issuerHash) external {
-        require(msg.sender == manager, "not manager");
+    function removeIssuer(bytes32 issuerHash) external onlyManager {
         require(_issuerHashIndex[issuerHash] != 0, "issuer not found");
 
         string memory iss = _issuers[issuerHash].issuer;
@@ -232,16 +234,14 @@ contract SignetGroup is Initializable, ISignetGroup {
     // -------------------------------------------------------------------------
 
     /// @inheritdoc ISignetGroup
-    function addAuthKey(bytes calldata pubkey) external {
-        require(msg.sender == manager, "not manager");
+    function addAuthKey(bytes calldata pubkey) external onlyManager {
         bytes32 h = keccak256(pubkey);
         require(_authKeyHashIndex[h] == 0, "auth key already exists");
         _addAuthKey(h, pubkey);
     }
 
     /// @inheritdoc ISignetGroup
-    function removeAuthKey(bytes32 keyHash) external {
-        require(msg.sender == manager, "not manager");
+    function removeAuthKey(bytes32 keyHash) external onlyManager {
         require(_authKeyHashIndex[keyHash] != 0, "auth key not found");
 
         bytes memory pubkey = _authKeys[keyHash];

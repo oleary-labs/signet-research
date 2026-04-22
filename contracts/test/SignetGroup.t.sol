@@ -241,20 +241,16 @@ contract SignetGroupTest is PubkeyHelpersGroup {
     // cancelRemoval
     // -------------------------------------------------------------------------
 
-    function testCancelRemoval_ByManager() public {
+    function testCancelRemoval_ManagerCannotCancelNodeInitiated() public {
         ISignetGroup g = _threeNodeGroup();
 
         vm.prank(node1);
-        g.queueRemoval(node1);  // self-initiated
+        g.queueRemoval(node1);  // node-initiated
 
+        // Manager should NOT be able to cancel a node's self-removal.
         vm.prank(manager);
-        vm.expectEmit(true, true, false, false);
-        emit ISignetGroup.RemovalCancelled(node1, manager);
+        vm.expectRevert("not initiator");
         g.cancelRemoval(node1);
-
-        vm.warp(block.timestamp + 2 days);
-        vm.expectRevert("no queued removal");
-        g.executeRemoval(node1);
     }
 
     function testCancelRemoval_ByInitiator() public {
@@ -271,12 +267,27 @@ contract SignetGroupTest is PubkeyHelpersGroup {
         assertEq(req.executeAfter, 0);
     }
 
-    function testCancelRemoval_NotManagerOrInitiator() public {
+    function testCancelRemoval_ManagerCancelsOwnRemoval() public {
+        ISignetGroup g = _threeNodeGroup();
+
+        // Manager queues removal — manager is the initiator.
+        vm.prank(manager);
+        g.queueRemoval(node1);
+
+        // Manager can cancel because they initiated it.
+        vm.prank(manager);
+        g.cancelRemoval(node1);
+
+        ISignetGroup.RemovalRequest memory req = g.removalRequests(node1);
+        assertEq(req.executeAfter, 0);
+    }
+
+    function testCancelRemoval_NotInitiator() public {
         ISignetGroup g = _threeNodeGroup();
         vm.prank(manager); g.queueRemoval(node1);
 
         vm.prank(node2);
-        vm.expectRevert("not manager or initiator");
+        vm.expectRevert("not initiator");
         g.cancelRemoval(node1);
     }
 

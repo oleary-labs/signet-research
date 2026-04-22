@@ -38,7 +38,7 @@ contract SignetFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable, IS
     // Upgrade-safe storage gap
     // -------------------------------------------------------------------------
 
-    uint256[48] private __gap;
+    uint256[50] private __gap;
 
     // -------------------------------------------------------------------------
     // Initializer
@@ -191,6 +191,25 @@ contract SignetFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable, IS
     /// @inheritdoc ISignetFactory
     function getNodeGroups(address node) external view returns (address[] memory) {
         return _nodeGroups[node];
+    }
+
+    /// @inheritdoc ISignetFactory
+    // TODO: add reverse mapping for O(1) lookup when group count grows
+    function getGroupsByManager(address mgr) external view returns (address[] memory) {
+        uint256 count = 0;
+        for (uint256 i = 0; i < groups.length; i++) {
+            if (ISignetGroup(groups[i]).manager() == mgr) {
+                count++;
+            }
+        }
+        address[] memory result = new address[](count);
+        uint256 j = 0;
+        for (uint256 i = 0; i < groups.length; i++) {
+            if (ISignetGroup(groups[i]).manager() == mgr) {
+                result[j++] = groups[i];
+            }
+        }
+        return result;
     }
 
     /// @inheritdoc ISignetFactory

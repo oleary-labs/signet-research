@@ -106,6 +106,10 @@ interface ISignetFactory {
     /// @notice Return all group addresses where node is currently active.
     function getNodeGroups(address node) external view returns (address[] memory);
 
+    /// @notice Return all group addresses where the given address is the current manager.
+    /// Iterates all groups — will need optimization if group count grows large.
+    function getGroupsByManager(address manager) external view returns (address[] memory);
+
     /// @notice Return the stored public key for a registered node.
     function getNodePubkey(address node) external view returns (bytes memory);
 }

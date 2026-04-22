@@ -85,7 +85,7 @@ interface ISignetGroup {
     /// @notice Queue a removal for an active node (manager or node itself).
     function queueRemoval(address node) external;
 
-    /// @notice Cancel a queued removal (manager or original initiator).
+    /// @notice Cancel a queued removal (only the original initiator).
     function cancelRemoval(address node) external;
 
     /// @notice Execute a removal after its delay has elapsed (permissionless).
