@@ -87,7 +87,11 @@ interface ISignetFactory {
     function isGroup(address) external view returns (bool);
 
     /// @notice Minimum removal delay enforced on group creation.
-    function MIN_REMOVAL_DELAY() external view returns (uint256);
+    /// @notice Minimum removal delay enforced on group creation.
+    function minRemovalDelay() external view returns (uint256);
+
+    /// @notice Update the minimum removal delay. Only callable by the factory owner.
+    function setMinRemovalDelay(uint256 newDelay) external;
 
     // -------------------------------------------------------------------------
     // Group membership callbacks (called by groups, not directly by users)

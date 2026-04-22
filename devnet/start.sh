@@ -94,10 +94,10 @@ echo "    node3  peer=${PEER_3}  eth=${ADDR_3}"
 # --------------------------------------------------------------------------
 # 3. Start Anvil
 # --------------------------------------------------------------------------
-info "Starting anvil (port 8545, 1-second blocks)..."
+info "Starting anvil (port 8545, 12-second blocks)..."
 anvil \
     --port 8545 \
-    --block-time 1 \
+    --block-time 12 \
     --silent \
     > "$DEVNET/anvil.log" 2>&1 &
 echo "ANVIL_PID=$!" > "$PIDS_FILE"
@@ -239,7 +239,7 @@ CREATE_RECEIPT=$(cast send \
     --rpc-url "$RPC" \
     "$FACTORY" \
     "createGroup(address[],uint256,uint256,(string,string[])[],bytes[])" \
-    "[$ADDR_1,$ADDR_2,$ADDR_3]" 2 86400 "$ISSUERS" "[]" \
+    "[$ADDR_1,$ADDR_2,$ADDR_3]" 2 600 "$ISSUERS" "[]" \
     --json)
 
 # topics[1] is the group address zero-padded to 32 bytes; take the last 40 hex chars.

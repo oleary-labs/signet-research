@@ -15,14 +15,12 @@ import "./interfaces/ISignetGroup.sol";
 ///         deploys SignetGroup instances via an UpgradeableBeacon.
 contract SignetFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable, ISignetFactory {
     // -------------------------------------------------------------------------
-    // Constants
-    // -------------------------------------------------------------------------
-
-    uint256 public constant MIN_REMOVAL_DELAY = 1 days;
-
-    // -------------------------------------------------------------------------
     // State
     // -------------------------------------------------------------------------
+
+    /// @notice Minimum removal delay enforced on group creation. Mutable by
+    ///         the factory owner (protocol governance). Defaults to 10 minutes.
+    uint256 public minRemovalDelay;
 
     mapping(address => NodeInfo) public nodes;
     address[] public registeredNodes;
@@ -52,6 +50,12 @@ contract SignetFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable, IS
     function initialize(address admin, address groupImpl) external initializer {
         __Ownable_init(admin);
         groupBeacon = address(new UpgradeableBeacon(groupImpl, address(this)));
+        minRemovalDelay = 10 minutes;
+    }
+
+    /// @notice Update the minimum removal delay. Only callable by the factory owner.
+    function setMinRemovalDelay(uint256 newDelay) external onlyOwner {
+        minRemovalDelay = newDelay;
     }
 
     // -------------------------------------------------------------------------
@@ -118,7 +122,7 @@ contract SignetFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable, IS
         ISignetGroup.InitialIssuer[] calldata initialIssuers,
         bytes[] calldata initialAuthKeys
     ) external returns (address group) {
-        require(removalDelay >= MIN_REMOVAL_DELAY, "removal delay too short");
+        require(removalDelay >= minRemovalDelay, "removal delay too short");
         require(threshold > 0 && threshold <= nodeAddrs.length, "invalid threshold for node count");
 
         // Two-step deploy: set isGroup BEFORE calling initialize so that

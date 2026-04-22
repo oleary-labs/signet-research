@@ -198,7 +198,7 @@ contract SignetFactoryTest is PubkeyHelpers {
         addrs[0] = node1; addrs[1] = node2; addrs[2] = node3;
 
         vm.expectRevert("removal delay too short");
-        factory.createGroup(addrs, 1, 1 days - 1, _noIssuers, _noAuthKeys);
+        factory.createGroup(addrs, 1, 10 minutes - 1, _noIssuers, _noAuthKeys);
     }
 
     function testCreateGroup_ThresholdTooHigh() public {
