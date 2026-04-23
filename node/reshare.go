@@ -55,8 +55,19 @@ func (n *Node) initReshareState(store *ReshareStore) {
 				zap.String("group_id", gid), zap.Error(err))
 			continue
 		}
-		n.reshareJobs[gid] = job
 		done, _ := store.CountKeysDone(gid)
+
+		// Discard jobs that are empty or already complete.
+		if len(job.KeysTotal) == 0 || done >= len(job.KeysTotal) {
+			n.log.Info("reshare: discarding completed/empty job on startup",
+				zap.String("group_id", gid),
+				zap.Int("keys_total", len(job.KeysTotal)),
+				zap.Int("keys_done", done))
+			store.DeleteJob(gid)
+			continue
+		}
+
+		n.reshareJobs[gid] = job
 		n.log.Info("reshare: loaded pending job",
 			zap.String("group_id", gid),
 			zap.Int("keys_total", len(job.KeysTotal)),
@@ -641,14 +652,18 @@ func (n *Node) createReshareJob(groupID string, eventType string, oldMembers, ne
 	if err != nil {
 		return fmt.Errorf("list keys: %w", err)
 	}
+	if len(keys) == 0 {
+		// No keys to reshare. For membership-change reshares triggered by
+		// chain events, new-only nodes accept the job via the coord handler
+		// (the coordinator sends key IDs). For HTTP-triggered refreshes,
+		// there's simply nothing to do.
+		if eventType == "refresh" {
+			return nil
+		}
+	}
 	if len(keys) == 0 && len(oldMembers) == 0 {
-		// No keys and no old committee — nothing to do.
 		return nil
 	}
-	// Note: keys may be empty for new-only nodes that don't yet hold any
-	// shares. The job is still needed so the coord handler accepts incoming
-	// reshare requests. The coordinator (an old+new node) drives the key
-	// iteration and sends the key IDs via the coord message.
 
 	job := &ReshareJob{
 		GroupID:      groupID,

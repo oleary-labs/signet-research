@@ -1139,6 +1139,16 @@ func (n *Node) handleStartReshare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if there are any keys to reshare.
+	keyCount := 0
+	if keyIDs, err := n.km.ListKeys(groupID); err == nil {
+		keyCount = len(keyIDs)
+	}
+	if keyCount == 0 {
+		httpError(w, http.StatusBadRequest, "no keys to reshare for this group")
+		return
+	}
+
 	// Create a same-committee reshare job (key refresh).
 	members := make([]tss.PartyID, len(grp.Members))
 	copy(members, grp.Members)
