@@ -1,0 +1,37 @@
+---
+# roles/bb/tasks/main.yml — Install Barretenberg (bb) prover/verifier.
+#
+# Installs bb via bbup at the version pinned in signet-circuits toolchain.json.
+# Installed under the ansible_user home, then symlinked to /usr/local/bin/bb
+# so signetd (running as signet user) can find it on PATH.
+
+- name: Install bbup
+  shell: |
+    if [ ! -f "$HOME/.bb/bbup" ]; then
+      curl -sL https://raw.githubusercontent.com/AztecProtocol/aztec-packages/main/barretenberg/cpp/installation/install | bash
+    fi
+  args:
+    creates: "{{ ansible_env.HOME }}/.bb/bbup"
+
+- name: Install bb at pinned version
+  shell: |
+    export PATH="$HOME/.bb:${PATH}"
+    bbup -v {{ bb_version }}
+  environment:
+    PATH: "{{ ansible_env.HOME }}/.bb:{{ ansible_env.PATH }}"
+
+- name: Check bb version
+  command: "{{ ansible_env.HOME }}/.bb/bb --version"
+  register: bb_ver
+  changed_when: false
+
+- name: Show bb version
+  debug:
+    msg: "bb {{ bb_ver.stdout }}"
+
+- name: Symlink bb to /usr/local/bin
+  become: true
+  file:
+    src: "{{ ansible_env.HOME }}/.bb/bb"
+    dest: /usr/local/bin/bb
+    state: link

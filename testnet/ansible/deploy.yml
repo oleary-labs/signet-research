@@ -52,6 +52,7 @@
       when: use_kms | default(false) | bool
 
   roles:
+    - bb
     - role: kms-frost
       when: use_kms | default(false) | bool
     - signetd
