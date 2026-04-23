@@ -12,5 +12,5 @@ kms_bin: /usr/local/bin/kms-frost
 kms_socket: /run/signet/kms.sock
 kms_data_dir: /opt/signet/kms-data
 
-# Barretenberg version (must match signet-circuits/toolchain.json)
-bb_version: "3.0.0-nightly.20251104"
+# Barretenberg version — read from signet-circuits/toolchain.json at deploy time.
+# See roles/bb/tasks/main.yml for how this is resolved.
