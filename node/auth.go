@@ -674,7 +674,7 @@ func (g *GroupAuth) ValidateAuthProof(ctx context.Context, groupID string, proof
 		return "", fmt.Errorf("auth proof missing ZK proof bytes")
 	}
 	if len(g.circuitVK) == 0 {
-		return "", fmt.Errorf("no circuit verification key configured (set vk_path)")
+		return "", fmt.Errorf("no circuit verification key available (embedded VK is empty)")
 	}
 
 	// Verify the JWKS modulus matches a real RSA key from the issuer's OIDC JWKS.

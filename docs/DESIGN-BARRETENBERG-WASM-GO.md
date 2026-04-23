@@ -1,5 +1,7 @@
 # Barretenberg WASM in Go via wazero
 
+<!-- TODO: Update file paths — circuit source and VK have moved to the signet-circuits repo. -->
+
 **Status: Deferred** — viable approach, not yet implemented.
 
 ## Goal

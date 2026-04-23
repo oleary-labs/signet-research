@@ -1,5 +1,7 @@
 # signet
 
+<!-- TODO: Update references to circuits/jwt_auth/ and vk_path — circuit source has moved to the signet-circuits repo. VK is now embedded at build time. -->
+
 Research implementation of a threshold signing network using FROST (RFC 9591) on secp256k1.
 
 Nodes hold persistent secp256k1 identities, connect over a libp2p mesh, and expose an HTTP API for distributed key generation and threshold signing. Signatures are produced in Ethereum-compatible format (65-byte R+S+V).

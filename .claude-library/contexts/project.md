@@ -1,5 +1,7 @@
 # Project Context: signet
 
+<!-- TODO: Update — circuits/ directory has been removed. Circuit source lives in the signet-circuits repo; VK is embedded via Go module. -->
+
 ## Overview
 Research project implementing a threshold signing network. Uses a custom LSS (Linear Secret Sharing) MPC protocol (`signet/lss`) for keygen, signing, and reshare, with `libp2p` for P2P transport.
 

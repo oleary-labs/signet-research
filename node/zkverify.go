@@ -24,7 +24,7 @@ const (
 // encodePublicInputs serializes AuthProof fields into the binary format
 // expected by `bb verify -i <file>`: concatenated 32-byte big-endian BN254
 // field elements matching the circuit's public input declaration order in
-// circuits/jwt_auth/src/main.nr:
+// signet-circuits/circuits/jwt_auth/src/main.nr:
 //
 //	pubkey_modulus_limbs  [u128; 18]
 //	expected_iss          BoundedVec<u8, 128>  (128 storage + 1 len)
@@ -117,11 +117,8 @@ func splitToLimbs(n *big.Int, chunkBits, numChunks int) []*big.Int {
 	return limbs
 }
 
-// verifyBBProof reconstructs the full Honk proof blob (metadata + public inputs
-// + proof) and shells out to `bb verify`. bb.js splits the proof and public
-// inputs apart; the CLI expects the combined format:
-//
-//	[4-byte BE size in fields] [public inputs] [proof]
+// verifyBBProof shells out to `bb verify` with separate proof, public inputs,
+// and verification key files.
 func verifyBBProof(proof, publicInputs, vk []byte) error {
 	bbPath, err := findBB()
 	if err != nil {
@@ -134,24 +131,21 @@ func verifyBBProof(proof, publicInputs, vk []byte) error {
 	}
 	defer os.RemoveAll(dir)
 
-	// Reconstruct the full proof blob: 4-byte metadata + publicInputs + proof.
-	totalFields := (len(publicInputs) + len(proof)) / fieldElementSize
-	fullProof := make([]byte, 4+len(publicInputs)+len(proof))
-	binary.BigEndian.PutUint32(fullProof[0:4], uint32(totalFields))
-	copy(fullProof[4:4+len(publicInputs)], publicInputs)
-	copy(fullProof[4+len(publicInputs):], proof)
-
 	proofPath := filepath.Join(dir, "proof")
+	piPath := filepath.Join(dir, "public_inputs")
 	vkPath := filepath.Join(dir, "vk")
 
-	if err := os.WriteFile(proofPath, fullProof, 0600); err != nil {
+	if err := os.WriteFile(proofPath, proof, 0600); err != nil {
 		return fmt.Errorf("write proof: %w", err)
+	}
+	if err := os.WriteFile(piPath, publicInputs, 0600); err != nil {
+		return fmt.Errorf("write public_inputs: %w", err)
 	}
 	if err := os.WriteFile(vkPath, vk, 0600); err != nil {
 		return fmt.Errorf("write vk: %w", err)
 	}
 
-	cmd := exec.Command(bbPath, "verify", "-k", vkPath, "-p", proofPath)
+	cmd := exec.Command(bbPath, "verify", "-k", vkPath, "-p", proofPath, "-i", piPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("bb verify: %w\noutput: %s", err, output)

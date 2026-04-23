@@ -3,6 +3,7 @@ module signet
 go 1.26
 
 require (
+	github.com/signet-protocol/signet-circuits/packages/go v0.0.0
 	github.com/bytemare/dkg v0.0.0-20241007182121-23ea4d549880
 	github.com/bytemare/ecc v0.9.0
 	github.com/bytemare/frost v0.0.0-20260326110248-5128efc25b2f
@@ -161,3 +162,5 @@ require (
 )
 
 replace github.com/bytemare/frost => github.com/oleary-labs/frost v0.0.0-20260408020012-f506991dfd28
+
+replace github.com/signet-protocol/signet-circuits/packages/go => ../signet-circuits/packages/go

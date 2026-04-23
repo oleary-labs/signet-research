@@ -1,5 +1,7 @@
 # ZK Proof Build & Toolchain Reference
 
+<!-- TODO: This doc is largely superseded by the signet-circuits repo (docs/toolchain.md, docs/architecture.md). Update or replace with a pointer to signet-circuits. -->
+
 This document describes the ZK proving pipeline used for JWT authentication in the Signet Console. It covers the circuit, toolchain versions, build process, and client-side proving architecture.
 
 ## Overview

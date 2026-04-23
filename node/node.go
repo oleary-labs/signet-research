@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	circuits "github.com/signet-protocol/signet-circuits/packages/go"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
@@ -168,19 +169,19 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		}
 	}
 
-	// Load circuit verification key if configured (required for production ZK auth).
-	var circuitVK []byte
-	if cfg.VKPath != "" {
-		var err error
-		circuitVK, err = os.ReadFile(cfg.VKPath)
-		if err != nil {
-			km.Close()
-			h.Close()
-			cancel()
-			return nil, fmt.Errorf("read circuit VK from %s: %w", cfg.VKPath, err)
-		}
-		log.Info("loaded circuit verification key", zap.String("path", cfg.VKPath), zap.Int("bytes", len(circuitVK)))
+	// Circuit VK is embedded from signet-circuits at build time.
+	meta, err := circuits.JWTMetadata()
+	if err != nil {
+		km.Close()
+		h.Close()
+		cancel()
+		return nil, fmt.Errorf("load circuit metadata: %w", err)
 	}
+	log.Info("loaded embedded circuit VK",
+		zap.String("circuit_hash", meta.CircuitHash),
+		zap.String("bb", meta.Toolchain.BB),
+		zap.Int("vk_bytes", len(circuits.JWTVK)),
+	)
 
 	// Open reshare store. For LocalKeyManager, share the same bbolt DB.
 	// For RemoteKeyManager, open a dedicated DB for job tracking (the node
@@ -232,7 +233,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 		km:             km,
 		keygenReady:    make(map[shardKey]chan struct{}),
 		groups:         make(map[string]*GroupInfo),
-		auth:           newGroupAuth(ctx, circuitVK, log),
+		auth:           newGroupAuth(ctx, circuits.JWTVK, log),
 		sessions:       newSessionStore(),
 		bootstrapPeers: bootstrapPeers,
 	}

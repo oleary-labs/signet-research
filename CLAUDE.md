@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+<!-- TODO: Update references to circuits/jwt_auth/ — circuit source has moved to the signet-circuits repo. VK is now embedded via the Go module at github.com/signet-protocol/signet-circuits/packages/go. -->
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview

@@ -276,7 +276,6 @@ bootstrap_peers:
 node_type: public
 eth_rpc: ${RPC}
 factory_address: ${FACTORY}
-vk_path: ${REPO}/circuits/jwt_auth/keys/vk
 EOF
 
     if $USE_KMS; then
