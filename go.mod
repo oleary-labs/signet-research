@@ -3,7 +3,6 @@ module signet
 go 1.26
 
 require (
-	github.com/signet-protocol/signet-circuits/packages/go v0.0.0
 	github.com/bytemare/dkg v0.0.0-20241007182121-23ea4d549880
 	github.com/bytemare/ecc v0.9.0
 	github.com/bytemare/frost v0.0.0-20260326110248-5128efc25b2f
@@ -15,10 +14,13 @@ require (
 	github.com/libp2p/go-libp2p v0.47.0
 	github.com/libp2p/go-libp2p-kad-dht v0.37.1
 	github.com/multiformats/go-multiaddr v0.16.1
+	github.com/oleary-labs/signet-circuits/packages/go v0.1.0
 	github.com/stretchr/testify v1.11.1
 	go.etcd.io/bbolt v1.4.3
 	go.uber.org/zap v1.27.1
 	golang.org/x/crypto v0.49.0
+	google.golang.org/grpc v1.80.0
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -156,11 +158,7 @@ require (
 	golang.org/x/tools v0.42.0 // indirect
 	gonum.org/v1/gonum v0.17.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260120221211-b8f7ae30c516 // indirect
-	google.golang.org/grpc v1.80.0 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
 replace github.com/bytemare/frost => github.com/oleary-labs/frost v0.0.0-20260408020012-f506991dfd28
-
-replace github.com/signet-protocol/signet-circuits/packages/go => ../signet-circuits/packages/go

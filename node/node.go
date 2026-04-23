@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	circuits "github.com/signet-protocol/signet-circuits/packages/go"
+	circuits "github.com/oleary-labs/signet-circuits/packages/go"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
