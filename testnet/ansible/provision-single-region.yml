@@ -1,6 +1,6 @@
 ---
-# provision-single-region.yml — Launch 5 EC2 instances in us-east-1 across
-# different AZs for single-region performance comparison.
+# provision-single-region.yml — Launch 3 EC2 instances in us-east-1 across
+# different AZs.
 #
 # Usage:
 #   ansible-playbook provision-single-region.yml -e ssh_key_name=signet-testnet
@@ -17,13 +17,34 @@
     ami: ami-009d9173b44d0482b  # Ubuntu 24.04 LTS x86_64 (Canonical)
     security_group_name: signet-testnet-sg
     nodes:
-      - { name: node1-local, az: us-east-1a }
-      - { name: node2-local, az: us-east-1b }
-      - { name: node3-local, az: us-east-1c }
-      - { name: node4-local, az: us-east-1d }
-      - { name: node5-local, az: us-east-1f }
+      - { name: node1, az: us-east-1a }
+      - { name: node2, az: us-east-1b }
+      - { name: node3, az: us-east-1c }
 
   tasks:
+    - name: Ensure security group
+      amazon.aws.ec2_security_group:
+        name: "{{ security_group_name }}"
+        description: "Signet testnet - SSH, p2p, API"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+            rule_desc: SSH
+          - proto: tcp
+            from_port: 9000
+            to_port: 9000
+            cidr_ip: 0.0.0.0/0
+            rule_desc: "libp2p"
+          - proto: tcp
+            from_port: 8080
+            to_port: 8080
+            cidr_ip: 0.0.0.0/0
+            rule_desc: "HTTP API"
+        state: present
+
     - name: Ensure EC2 instance per node
       amazon.aws.ec2_instance:
         name: "signet-{{ item.name }}"
@@ -49,6 +70,9 @@
         filters:
           "tag:Project": signet-testnet
           "tag:Node": "{{ item.name }}"
+          instance-state-name:
+            - pending
+            - running
       loop: "{{ nodes }}"
       loop_control:
         label: "{{ item.name }} ({{ item.az }})"
@@ -77,9 +101,18 @@
       copy:
         content: |
           {% for node in nodes %}
-          {{ node.name | replace('-local', '') }}={{ instance_ips[node.name] }}
+          {{ node.name }}={{ instance_ips[node.name] }}
           {% endfor %}
-        dest: "{{ playbook_dir }}/../.hosts-local"
+        dest: "{{ playbook_dir }}/../.hosts"
+
+    - name: Update inventory.yml with provisioned IPs
+      replace:
+        path: "{{ playbook_dir }}/inventory.yml"
+        regexp: '({{ item.key }}:\n\s+ansible_host:) .*'
+        replace: '\1 {{ item.value }}'
+      loop: "{{ instance_ips | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
 
     - name: Wait for SSH on all instances
       wait_for:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # testnet/scripts/deploy-contracts.sh — Deploy SignetFactory to Sepolia,
-# fund and register nodes, create a 3-of-5 signing group.
+# fund and register nodes, create a 2-of-3 signing group with Google OAuth.
 #
 # Prerequisites:
 #   - Node identities generated (run init-nodes.sh first)
@@ -112,9 +112,14 @@ for i in $(seq 0 $((NUM_NODES - 1))); do
 done
 
 # --------------------------------------------------------------------------
-# 3. Create signing group (3-of-5: threshold=2, quorum=3)
+# 3. Create signing group (2-of-3: threshold=2, quorum=2) with Google OAuth
 # --------------------------------------------------------------------------
-info "Creating signing group (threshold=2, 5 nodes)..."
+info "Creating signing group (threshold=2, $NUM_NODES nodes, Google OAuth)..."
+
+GOOGLE_ISS="https://accounts.google.com"
+GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-203385367894-0uhir5bt81bsg1gcflfg6tdt1m3eeo0s.apps.googleusercontent.com}"
+ISSUERS="[(${GOOGLE_ISS},[${GOOGLE_CLIENT_ID}])]"
+info "  issuer: ${GOOGLE_ISS} (client_id: ${GOOGLE_CLIENT_ID})"
 
 GROUP_CREATED_TOPIC=$(cast keccak "GroupCreated(address,address,uint256)")
 
@@ -122,8 +127,8 @@ CREATE_RECEIPT=$(cast send \
     --private-key "$DEPLOYER_PK" \
     --rpc-url "$RPC" \
     "$FACTORY" \
-    "createGroup(address[],uint256,uint256,uint256,uint256,(string,string[])[],uint256,uint256,bytes[])" \
-    "[$ADDR_LIST]" 2 86400 86400 86400 "[]" 86400 86400 "[]" \
+    "createGroup(address[],uint256,uint256,(string,string[])[],bytes[])" \
+    "[$ADDR_LIST]" 2 600 "$ISSUERS" "[]" \
     --json)
 
 GROUP_RAW=$(echo "$CREATE_RECEIPT" | jq -r \
@@ -146,7 +151,7 @@ info "Writing testnet/.env..."
     echo "GROUP_BEACON=${BEACON}"
     echo "GROUP_IMPL=${GROUP_IMPL}"
     echo "GROUP_ADDRESS=${GROUP}"
-    echo "USE_KMS=false"
+    echo "USE_KMS=true"
     echo ""
 
     # Read IPs from .hosts if available, otherwise leave API URLs as placeholders.
@@ -169,11 +174,9 @@ info "Writing testnet/.env..."
 
     # Region annotations for harness output.
     echo ""
-    echo "NODE1_REGION=us-east-1"
-    echo "NODE2_REGION=us-east-2"
-    echo "NODE3_REGION=us-west-1"
-    echo "NODE4_REGION=us-west-2"
-    echo "NODE5_REGION=ca-central-1"
+    echo "NODE1_REGION=us-east-1a"
+    echo "NODE2_REGION=us-east-1b"
+    echo "NODE3_REGION=us-east-1c"
 } > "$ENV_FILE"
 
 # Also export FACTORY_ADDRESS for Ansible to pick up.

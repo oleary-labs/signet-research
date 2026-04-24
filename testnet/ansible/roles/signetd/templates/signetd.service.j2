@@ -11,6 +11,7 @@ Requires=kms-frost.service
 Type=simple
 User={{ signetd_user }}
 Group={{ signetd_user }}
+Environment=HOME=/opt/signet
 ExecStart={{ signetd_bin }} -config {{ signetd_config_dir }}/config.yaml -log-level {{ log_level }}
 Restart=on-failure
 RestartSec=5
