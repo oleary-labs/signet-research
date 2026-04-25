@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 ciborium = "0.2"
+frost-core = "2.2"
+frost-ed25519 = "2.2"
 frost-secp256k1 = "2.2"
 hex = "0.4"
 k256 = { version = "0.13", features = ["arithmetic"] }

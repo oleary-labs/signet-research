@@ -8,11 +8,14 @@ pub mod proto {
     tonic::include_proto!("signet.kms.v1");
 }
 
+mod curve;
 mod params;
 mod reshare;
+mod reshare_session;
 mod service;
 mod session;
 mod storage;
+mod types;
 
 use proto::key_manager_server::KeyManagerServer;
 use service::KmsService;

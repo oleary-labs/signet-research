@@ -11,8 +11,9 @@ use crate::params;
 use crate::proto;
 use crate::proto::key_manager_server::KeyManager;
 use crate::proto::*;
-use crate::session::{OutgoingMessage, Session, StepOutput};
+use crate::session::Session;
 use crate::storage::Storage;
+use crate::types::{OutgoingMessage, StepOutput};
 
 /// Shared state for the KMS service.
 ///
@@ -46,7 +47,7 @@ impl KmsService {
     }
 
     /// Convert a session result to a proto SessionResult.
-    fn to_proto_result(r: crate::session::SessionResult) -> proto::SessionResult {
+    fn to_proto_result(r: crate::types::SessionResult) -> proto::SessionResult {
         proto::SessionResult {
             signature_r: r.signature_r.unwrap_or_default(),
             signature_z: r.signature_z.unwrap_or_default(),

@@ -199,6 +199,13 @@ pub struct ReshareParams {
     pub old_party_ids: Vec<String>,
     pub new_party_ids: Vec<String>,
     pub new_threshold: u16,
+    /// Curve for this reshare. Defaults to secp256k1 if absent.
+    #[serde(default = "default_curve")]
+    pub curve: crate::curve::Curve,
+}
+
+fn default_curve() -> crate::curve::Curve {
+    crate::curve::Curve::Secp256k1
 }
 
 /// Decode CBOR bytes into reshare params.

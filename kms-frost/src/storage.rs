@@ -11,13 +11,16 @@ use serde::{Deserialize, Serialize};
 use sled::Transactional;
 
 /// Persistent key material for a single key shard.
+///
+/// The curve is not stored here — it is a group-level property known by the
+/// node, which passes it to the KMS via session params.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredKey {
-    /// frost-secp256k1 KeyPackage serialized bytes.
+    /// FROST KeyPackage serialized bytes (curve-specific).
     pub key_package: Vec<u8>,
-    /// frost-secp256k1 PublicKeyPackage serialized bytes.
+    /// FROST PublicKeyPackage serialized bytes (curve-specific).
     pub public_key_package: Vec<u8>,
-    /// 33-byte compressed secp256k1 group public key.
+    /// Compressed group public key (33 bytes secp256k1, 32 bytes Ed25519).
     pub group_key: Vec<u8>,
     /// This node's compressed public key share.
     pub verifying_share: Vec<u8>,
