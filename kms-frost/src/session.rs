@@ -614,7 +614,8 @@ fn process_typed<C: Ciphersuite>(
 pub enum Session {
     Secp256k1(TypedSession<frost_secp256k1::Secp256K1Sha256>),
     Ed25519(TypedSession<frost_ed25519::Ed25519Sha512>),
-    Reshare(ReshareSession),
+    ReshareSecp256k1(ReshareSession<frost_secp256k1::Secp256K1Sha256>),
+    ReshareEd25519(ReshareSession<frost_ed25519::Ed25519Sha512>),
 }
 
 impl Session {
@@ -622,7 +623,8 @@ impl Session {
         match self {
             Session::Secp256k1(s) => s.state_name(),
             Session::Ed25519(s) => s.state_name(),
-            Session::Reshare(s) => s.state_name(),
+            Session::ReshareSecp256k1(s) => s.state_name(),
+            Session::ReshareEd25519(s) => s.state_name(),
         }
     }
 
@@ -630,7 +632,8 @@ impl Session {
         match self {
             Session::Secp256k1(s) => s.pending_count(),
             Session::Ed25519(s) => s.pending_count(),
-            Session::Reshare(s) => s.pending_count(),
+            Session::ReshareSecp256k1(s) => s.pending_count(),
+            Session::ReshareEd25519(s) => s.pending_count(),
         }
     }
 
@@ -672,11 +675,16 @@ impl Session {
         params: ReshareParams,
         storage: &Storage,
     ) -> Result<(Self, StepOutput), String> {
-        if params.curve != Curve::Secp256k1 {
-            return Err(format!("reshare not yet supported for {}", params.curve));
+        match params.curve {
+            Curve::Secp256k1 => {
+                let (s, o) = ReshareSession::<frost_secp256k1::Secp256K1Sha256>::start(session_id, params, storage)?;
+                Ok((Session::ReshareSecp256k1(s), o))
+            }
+            Curve::Ed25519 => {
+                let (s, o) = ReshareSession::<frost_ed25519::Ed25519Sha512>::start(session_id, params, storage)?;
+                Ok((Session::ReshareEd25519(s), o))
+            }
         }
-        let (s, o) = ReshareSession::start(session_id, params, storage)?;
-        Ok((Session::Reshare(s), o))
     }
 
     pub fn process_message(
@@ -689,7 +697,8 @@ impl Session {
         match self {
             Session::Secp256k1(s) => s.process_message(from, to, payload, storage),
             Session::Ed25519(s) => s.process_message(from, to, payload, storage),
-            Session::Reshare(s) => s.process_message(from, to, payload, storage),
+            Session::ReshareSecp256k1(s) => s.process_message(from, to, payload, storage),
+            Session::ReshareEd25519(s) => s.process_message(from, to, payload, storage),
         }
     }
 }

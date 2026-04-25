@@ -9,7 +9,6 @@ frost-core = "2.2"
 frost-ed25519 = "2.2"
 frost-secp256k1 = "2.2"
 hex = "0.4"
-k256 = { version = "0.13", features = ["arithmetic"] }
 prost = "0.13"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
