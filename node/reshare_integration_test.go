@@ -233,7 +233,7 @@ func clusterSign(t *testing.T, ctx context.Context, cluster []*testNode, groupID
 
 	// All parties should produce byte-identical signatures.
 	for i := 1; i < len(sigs); i++ {
-		if !bytes.Equal(sigs[0].R[:], sigs[i].R[:]) || !bytes.Equal(sigs[0].Z[:], sigs[i].Z[:]) {
+		if !bytes.Equal(sigs[0].R, sigs[i].R) || !bytes.Equal(sigs[0].Z, sigs[i].Z) {
 			t.Fatalf("signature mismatch between party 0 and %d", i)
 		}
 	}

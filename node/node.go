@@ -654,6 +654,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		GroupID    string `json:"group_id"`
 		KeyID      string `json:"key_id"`
 		KeySuffix  string `json:"key_suffix"`
+		Curve      string `json:"curve"`
 		SessionPub string `json:"session_pub"`
 		RequestSig string `json:"request_sig"`
 		Nonce      string `json:"nonce"`
@@ -662,6 +663,10 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "decode body: "+err.Error())
 		return
+	}
+	// Default curve to secp256k1.
+	if req.Curve == "" {
+		req.Curve = "secp256k1"
 	}
 	if req.GroupID == "" {
 		httpError(w, http.StatusBadRequest, "group_id is required")
@@ -760,6 +765,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		KeyID:     keyID,
 		Parties:   sortedParties,
 		Threshold: grp.Threshold,
+		Curve:     req.Curve,
 	})
 	if err != nil {
 		n.log.Error("keygen failed",
@@ -770,25 +776,37 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ethAddr, err := network.EthereumAddressFromGroupKey(info.GroupKey)
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "eth addr: "+err.Error())
-		return
+	resp := map[string]any{
+		"group_id":   req.GroupID,
+		"key_id":     keyID,
+		"curve":      req.Curve,
+		"public_key": "0x" + hex.EncodeToString(info.GroupKey),
 	}
 
-	n.log.Info("keygen complete",
-		zap.String("group_id", req.GroupID),
-		zap.String("key_id", keyID),
-		zap.String("eth_addr", "0x"+hex.EncodeToString(ethAddr[:])),
-	)
+	// Include ethereum_address only for secp256k1 keys.
+	if req.Curve == "secp256k1" {
+		ethAddr, err := network.EthereumAddressFromGroupKey(info.GroupKey)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "eth addr: "+err.Error())
+			return
+		}
+		resp["ethereum_address"] = "0x" + hex.EncodeToString(ethAddr[:])
+		n.log.Info("keygen complete",
+			zap.String("group_id", req.GroupID),
+			zap.String("key_id", keyID),
+			zap.String("curve", req.Curve),
+			zap.String("eth_addr", "0x"+hex.EncodeToString(ethAddr[:])),
+		)
+	} else {
+		n.log.Info("keygen complete",
+			zap.String("group_id", req.GroupID),
+			zap.String("key_id", keyID),
+			zap.String("curve", req.Curve),
+		)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"group_id":         req.GroupID,
-		"key_id":           keyID,
-		"public_key":       "0x" + hex.EncodeToString(info.GroupKey),
-		"ethereum_address": "0x" + hex.EncodeToString(ethAddr[:]),
-	})
+	json.NewEncoder(w).Encode(resp)
 }
 
 // handleSign runs a threshold signing session using a previously generated key.
@@ -934,6 +952,12 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Curve is a group-level property. Use keyInfo if available, default to secp256k1.
+	curve := keyInfo.Curve
+	if curve == "" {
+		curve = "secp256k1"
+	}
+
 	sig, err := n.km.RunSign(r.Context(), SignParams{
 		Host:        n.host,
 		SN:          sn,
@@ -942,6 +966,7 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		KeyID:       keyID,
 		Signers:     sortedSigners,
 		MessageHash: msgHash,
+		Curve:       curve,
 	})
 	if err != nil {
 		n.log.Error("sign failed",
@@ -952,23 +977,24 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ethSig, err := sig.SigEthereum()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "encode signature: "+err.Error())
-		return
-	}
-
 	n.log.Info("sign complete",
 		zap.String("group_id", req.GroupID),
 		zap.String("key_id", keyID),
 	)
 
+	resp := map[string]any{
+		"group_id":  req.GroupID,
+		"key_id":    keyID,
+		"signature": "0x" + hex.EncodeToString(sig.Bytes()),
+	}
+
+	// Include ethereum_signature for secp256k1 keys (backwards compat + on-chain format).
+	if ethSig, err := sig.SigEthereum(); err == nil {
+		resp["ethereum_signature"] = "0x" + hex.EncodeToString(ethSig)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"group_id":           req.GroupID,
-		"key_id":             keyID,
-		"ethereum_signature": "0x" + hex.EncodeToString(ethSig),
-	})
+	json.NewEncoder(w).Encode(resp)
 }
 
 // httpErr is a typed HTTP error used by validateSessionRequest so both the

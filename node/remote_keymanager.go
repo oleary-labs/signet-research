@@ -81,6 +81,7 @@ func (rkm *RemoteKeyManager) RunKeygen(ctx context.Context, p KeygenParams) (*Ke
 
 	return &KeyInfo{
 		GroupKey: result.GroupKey,
+		Curve:    p.Curve,
 	}, nil
 }
 
@@ -110,14 +111,14 @@ func (rkm *RemoteKeyManager) RunSign(ctx context.Context, p SignParams) (*tss.Si
 	if result == nil {
 		return nil, fmt.Errorf("sign session: no result returned")
 	}
-	if len(result.SignatureR) != 33 || len(result.SignatureZ) != 32 {
+	if len(result.SignatureR) == 0 || len(result.SignatureZ) != 32 {
 		return nil, fmt.Errorf("sign session: invalid signature sizes R=%d Z=%d", len(result.SignatureR), len(result.SignatureZ))
 	}
 
-	var sig tss.Signature
-	copy(sig.R[:], result.SignatureR)
-	copy(sig.Z[:], result.SignatureZ)
-	return &sig, nil
+	return &tss.Signature{
+		R: result.SignatureR,
+		Z: result.SignatureZ,
+	}, nil
 }
 
 // RunReshare starts a reshare session on the KMS and bridges messages.
@@ -362,11 +363,12 @@ func protoToTSSMessage(pm *kmspb.SessionMessage) *tss.Message {
 
 // kmsKeygenParams is the CBOR wire format for keygen session params.
 type kmsKeygenParams struct {
-	GroupID  string   `cbor:"group_id"`
-	KeyID    string   `cbor:"key_id"`
-	PartyID  string   `cbor:"party_id"`
-	PartyIDs []string `cbor:"party_ids"`
-	Threshold int     `cbor:"threshold"`
+	GroupID   string   `cbor:"group_id"`
+	KeyID     string   `cbor:"key_id"`
+	PartyID   string   `cbor:"party_id"`
+	PartyIDs  []string `cbor:"party_ids"`
+	Threshold int      `cbor:"threshold"`
+	Curve     string   `cbor:"curve,omitempty"`
 }
 
 // kmsSignParams is the CBOR wire format for sign session params.
@@ -376,6 +378,7 @@ type kmsSignParams struct {
 	PartyID     string   `cbor:"party_id"`
 	SignerIDs   []string `cbor:"signer_ids"`
 	MessageHash []byte   `cbor:"message"`
+	Curve       string   `cbor:"curve,omitempty"`
 }
 
 func encodeKeygenParams(p KeygenParams) ([]byte, error) {
@@ -389,6 +392,7 @@ func encodeKeygenParams(p KeygenParams) ([]byte, error) {
 		PartyID:   string(p.Host.Self()),
 		PartyIDs:  partyIDs,
 		Threshold: p.Threshold,
+		Curve:     p.Curve,
 	})
 }
 
@@ -403,17 +407,19 @@ func encodeSignParams(p SignParams) ([]byte, error) {
 		PartyID:     string(p.Host.Self()),
 		SignerIDs:   signerIDs,
 		MessageHash: p.MessageHash,
+		Curve:       p.Curve,
 	})
 }
 
 // kmsReshareParams is the CBOR wire format for reshare session params.
 type kmsReshareParams struct {
-	GroupID     string   `cbor:"group_id"`
-	KeyID       string   `cbor:"key_id"`
-	PartyID     string   `cbor:"party_id"`
-	OldPartyIDs []string `cbor:"old_party_ids"`
-	NewPartyIDs []string `cbor:"new_party_ids"`
-	NewThreshold int     `cbor:"new_threshold"`
+	GroupID      string   `cbor:"group_id"`
+	KeyID        string   `cbor:"key_id"`
+	PartyID      string   `cbor:"party_id"`
+	OldPartyIDs  []string `cbor:"old_party_ids"`
+	NewPartyIDs  []string `cbor:"new_party_ids"`
+	NewThreshold int      `cbor:"new_threshold"`
+	Curve        string   `cbor:"curve,omitempty"`
 }
 
 func encodeReshareParams(p ReshareParams) ([]byte, error) {
@@ -432,6 +438,7 @@ func encodeReshareParams(p ReshareParams) ([]byte, error) {
 		OldPartyIDs:  oldIDs,
 		NewPartyIDs:  newIDs,
 		NewThreshold: p.NewThreshold,
+		Curve:        p.Curve,
 	})
 }
 

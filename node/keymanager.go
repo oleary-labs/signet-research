@@ -60,6 +60,7 @@ type KeygenParams struct {
 	KeyID     string
 	Parties   []tss.PartyID
 	Threshold int
+	Curve     string // "secp256k1" or "ed25519"; defaults to "secp256k1"
 }
 
 // SignParams holds the inputs for a signing session.
@@ -71,6 +72,7 @@ type SignParams struct {
 	KeyID       string
 	Signers     []tss.PartyID
 	MessageHash []byte
+	Curve       string // "secp256k1" or "ed25519"; defaults to "secp256k1"
 }
 
 // ReshareParams holds the inputs for a key reshare session.
@@ -84,6 +86,7 @@ type ReshareParams struct {
 	NewParties   []tss.PartyID
 	OldThreshold int
 	NewThreshold int
+	Curve        string // "secp256k1" or "ed25519"; defaults to "secp256k1"
 }
 
 // ReshareResult holds the outcome of a reshare session for a single key.
@@ -100,8 +103,9 @@ type ReshareResult struct {
 // KeyInfo holds public metadata about a stored key shard. It does not contain
 // secret key material.
 type KeyInfo struct {
-	GroupKey  []byte        // 33-byte compressed secp256k1 group public key
+	GroupKey  []byte        // compressed group public key (33 bytes secp256k1, 32 bytes Ed25519)
 	PartyID  tss.PartyID   // this node's party ID
 	Parties  []tss.PartyID // all parties in the key group
 	Threshold int
+	Curve     string // "secp256k1" or "ed25519"
 }
