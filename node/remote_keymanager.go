@@ -212,8 +212,8 @@ func (rkm *RemoteKeyManager) GetKeyInfo(groupID, keyID string, curve Curve) (*Ke
 	}, nil
 }
 
-// ListKeys returns all key IDs stored under groupID.
-func (rkm *RemoteKeyManager) ListKeys(groupID string) ([]string, error) {
+// ListKeys returns all keys stored under groupID with their curves.
+func (rkm *RemoteKeyManager) ListKeys(groupID string) ([]KeyEntry, error) {
 	gid, _ := hex.DecodeString(strings.TrimPrefix(groupID, "0x"))
 	resp, err := rkm.client.ListKeys(context.Background(), &kmspb.GroupRef{
 		GroupId: gid,
@@ -221,7 +221,11 @@ func (rkm *RemoteKeyManager) ListKeys(groupID string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return resp.KeyIds, nil
+	entries := make([]KeyEntry, len(resp.Entries))
+	for i, e := range resp.Entries {
+		entries[i] = KeyEntry{KeyID: e.KeyId, Curve: Curve(e.Curve)}
+	}
+	return entries, nil
 }
 
 // ListGroups is not directly supported by the KMS proto; returns an error.

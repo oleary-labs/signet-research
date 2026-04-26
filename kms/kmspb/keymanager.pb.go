@@ -569,16 +569,68 @@ func (x *PublicKeyResponse) GetGeneration() uint64 {
 	return 0
 }
 
+type KeyListEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	KeyId         string                 `protobuf:"bytes,1,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
+	Curve         string                 `protobuf:"bytes,2,opt,name=curve,proto3" json:"curve,omitempty"` // "secp256k1" or "ed25519"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *KeyListEntry) Reset() {
+	*x = KeyListEntry{}
+	mi := &file_keymanager_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *KeyListEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*KeyListEntry) ProtoMessage() {}
+
+func (x *KeyListEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_keymanager_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use KeyListEntry.ProtoReflect.Descriptor instead.
+func (*KeyListEntry) Descriptor() ([]byte, []int) {
+	return file_keymanager_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *KeyListEntry) GetKeyId() string {
+	if x != nil {
+		return x.KeyId
+	}
+	return ""
+}
+
+func (x *KeyListEntry) GetCurve() string {
+	if x != nil {
+		return x.Curve
+	}
+	return ""
+}
+
 type KeyListResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	KeyIds        []string               `protobuf:"bytes,1,rep,name=key_ids,json=keyIds,proto3" json:"key_ids,omitempty"`
+	Entries       []*KeyListEntry        `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *KeyListResponse) Reset() {
 	*x = KeyListResponse{}
-	mi := &file_keymanager_proto_msgTypes[9]
+	mi := &file_keymanager_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -590,7 +642,7 @@ func (x *KeyListResponse) String() string {
 func (*KeyListResponse) ProtoMessage() {}
 
 func (x *KeyListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_keymanager_proto_msgTypes[9]
+	mi := &file_keymanager_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -603,12 +655,12 @@ func (x *KeyListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeyListResponse.ProtoReflect.Descriptor instead.
 func (*KeyListResponse) Descriptor() ([]byte, []int) {
-	return file_keymanager_proto_rawDescGZIP(), []int{9}
+	return file_keymanager_proto_rawDescGZIP(), []int{10}
 }
 
-func (x *KeyListResponse) GetKeyIds() []string {
+func (x *KeyListResponse) GetEntries() []*KeyListEntry {
 	if x != nil {
-		return x.KeyIds
+		return x.Entries
 	}
 	return nil
 }
@@ -622,7 +674,7 @@ type CommitReshareResponse struct {
 
 func (x *CommitReshareResponse) Reset() {
 	*x = CommitReshareResponse{}
-	mi := &file_keymanager_proto_msgTypes[10]
+	mi := &file_keymanager_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -634,7 +686,7 @@ func (x *CommitReshareResponse) String() string {
 func (*CommitReshareResponse) ProtoMessage() {}
 
 func (x *CommitReshareResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_keymanager_proto_msgTypes[10]
+	mi := &file_keymanager_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -647,7 +699,7 @@ func (x *CommitReshareResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitReshareResponse.ProtoReflect.Descriptor instead.
 func (*CommitReshareResponse) Descriptor() ([]byte, []int) {
-	return file_keymanager_proto_rawDescGZIP(), []int{10}
+	return file_keymanager_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CommitReshareResponse) GetGeneration() uint64 {
@@ -665,7 +717,7 @@ type DiscardPendingReshareResponse struct {
 
 func (x *DiscardPendingReshareResponse) Reset() {
 	*x = DiscardPendingReshareResponse{}
-	mi := &file_keymanager_proto_msgTypes[11]
+	mi := &file_keymanager_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -677,7 +729,7 @@ func (x *DiscardPendingReshareResponse) String() string {
 func (*DiscardPendingReshareResponse) ProtoMessage() {}
 
 func (x *DiscardPendingReshareResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_keymanager_proto_msgTypes[11]
+	mi := &file_keymanager_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -690,7 +742,7 @@ func (x *DiscardPendingReshareResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiscardPendingReshareResponse.ProtoReflect.Descriptor instead.
 func (*DiscardPendingReshareResponse) Descriptor() ([]byte, []int) {
-	return file_keymanager_proto_rawDescGZIP(), []int{11}
+	return file_keymanager_proto_rawDescGZIP(), []int{12}
 }
 
 type RollbackReshareRequest struct {
@@ -705,7 +757,7 @@ type RollbackReshareRequest struct {
 
 func (x *RollbackReshareRequest) Reset() {
 	*x = RollbackReshareRequest{}
-	mi := &file_keymanager_proto_msgTypes[12]
+	mi := &file_keymanager_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -717,7 +769,7 @@ func (x *RollbackReshareRequest) String() string {
 func (*RollbackReshareRequest) ProtoMessage() {}
 
 func (x *RollbackReshareRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_keymanager_proto_msgTypes[12]
+	mi := &file_keymanager_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -730,7 +782,7 @@ func (x *RollbackReshareRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackReshareRequest.ProtoReflect.Descriptor instead.
 func (*RollbackReshareRequest) Descriptor() ([]byte, []int) {
-	return file_keymanager_proto_rawDescGZIP(), []int{12}
+	return file_keymanager_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RollbackReshareRequest) GetGroupId() []byte {
@@ -769,7 +821,7 @@ type RollbackReshareResponse struct {
 
 func (x *RollbackReshareResponse) Reset() {
 	*x = RollbackReshareResponse{}
-	mi := &file_keymanager_proto_msgTypes[13]
+	mi := &file_keymanager_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -781,7 +833,7 @@ func (x *RollbackReshareResponse) String() string {
 func (*RollbackReshareResponse) ProtoMessage() {}
 
 func (x *RollbackReshareResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_keymanager_proto_msgTypes[13]
+	mi := &file_keymanager_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -794,7 +846,7 @@ func (x *RollbackReshareResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackReshareResponse.ProtoReflect.Descriptor instead.
 func (*RollbackReshareResponse) Descriptor() ([]byte, []int) {
-	return file_keymanager_proto_rawDescGZIP(), []int{13}
+	return file_keymanager_proto_rawDescGZIP(), []int{14}
 }
 
 var File_keymanager_proto protoreflect.FileDescriptor
@@ -838,9 +890,12 @@ const file_keymanager_proto_rawDesc = "" +
 	"\x0fverifying_share\x18\x02 \x01(\fR\x0everifyingShare\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x04R\n" +
-	"generation\"*\n" +
-	"\x0fKeyListResponse\x12\x17\n" +
-	"\akey_ids\x18\x01 \x03(\tR\x06keyIds\"7\n" +
+	"generation\";\n" +
+	"\fKeyListEntry\x12\x15\n" +
+	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x14\n" +
+	"\x05curve\x18\x02 \x01(\tR\x05curve\"H\n" +
+	"\x0fKeyListResponse\x125\n" +
+	"\aentries\x18\x01 \x03(\v2\x1b.signet.kms.v1.KeyListEntryR\aentries\"7\n" +
 	"\x15CommitReshareResponse\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x01 \x01(\x04R\n" +
@@ -883,7 +938,7 @@ func file_keymanager_proto_rawDescGZIP() []byte {
 }
 
 var file_keymanager_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_keymanager_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_keymanager_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_keymanager_proto_goTypes = []any{
 	(SessionType)(0),                      // 0: signet.kms.v1.SessionType
 	(*StartSessionRequest)(nil),           // 1: signet.kms.v1.StartSessionRequest
@@ -895,37 +950,39 @@ var file_keymanager_proto_goTypes = []any{
 	(*KeyRef)(nil),                        // 7: signet.kms.v1.KeyRef
 	(*GroupRef)(nil),                      // 8: signet.kms.v1.GroupRef
 	(*PublicKeyResponse)(nil),             // 9: signet.kms.v1.PublicKeyResponse
-	(*KeyListResponse)(nil),               // 10: signet.kms.v1.KeyListResponse
-	(*CommitReshareResponse)(nil),         // 11: signet.kms.v1.CommitReshareResponse
-	(*DiscardPendingReshareResponse)(nil), // 12: signet.kms.v1.DiscardPendingReshareResponse
-	(*RollbackReshareRequest)(nil),        // 13: signet.kms.v1.RollbackReshareRequest
-	(*RollbackReshareResponse)(nil),       // 14: signet.kms.v1.RollbackReshareResponse
+	(*KeyListEntry)(nil),                  // 10: signet.kms.v1.KeyListEntry
+	(*KeyListResponse)(nil),               // 11: signet.kms.v1.KeyListResponse
+	(*CommitReshareResponse)(nil),         // 12: signet.kms.v1.CommitReshareResponse
+	(*DiscardPendingReshareResponse)(nil), // 13: signet.kms.v1.DiscardPendingReshareResponse
+	(*RollbackReshareRequest)(nil),        // 14: signet.kms.v1.RollbackReshareRequest
+	(*RollbackReshareResponse)(nil),       // 15: signet.kms.v1.RollbackReshareResponse
 }
 var file_keymanager_proto_depIdxs = []int32{
 	0,  // 0: signet.kms.v1.StartSessionRequest.type:type_name -> signet.kms.v1.SessionType
 	3,  // 1: signet.kms.v1.StartSessionResponse.outgoing:type_name -> signet.kms.v1.SessionMessage
 	4,  // 2: signet.kms.v1.SessionMessage.result:type_name -> signet.kms.v1.SessionResult
-	1,  // 3: signet.kms.v1.KeyManager.StartSession:input_type -> signet.kms.v1.StartSessionRequest
-	3,  // 4: signet.kms.v1.KeyManager.ProcessMessage:input_type -> signet.kms.v1.SessionMessage
-	5,  // 5: signet.kms.v1.KeyManager.AbortSession:input_type -> signet.kms.v1.AbortSessionRequest
-	7,  // 6: signet.kms.v1.KeyManager.CommitReshare:input_type -> signet.kms.v1.KeyRef
-	7,  // 7: signet.kms.v1.KeyManager.DiscardPendingReshare:input_type -> signet.kms.v1.KeyRef
-	13, // 8: signet.kms.v1.KeyManager.RollbackReshare:input_type -> signet.kms.v1.RollbackReshareRequest
-	7,  // 9: signet.kms.v1.KeyManager.GetPublicKey:input_type -> signet.kms.v1.KeyRef
-	8,  // 10: signet.kms.v1.KeyManager.ListKeys:input_type -> signet.kms.v1.GroupRef
-	2,  // 11: signet.kms.v1.KeyManager.StartSession:output_type -> signet.kms.v1.StartSessionResponse
-	3,  // 12: signet.kms.v1.KeyManager.ProcessMessage:output_type -> signet.kms.v1.SessionMessage
-	6,  // 13: signet.kms.v1.KeyManager.AbortSession:output_type -> signet.kms.v1.AbortSessionResponse
-	11, // 14: signet.kms.v1.KeyManager.CommitReshare:output_type -> signet.kms.v1.CommitReshareResponse
-	12, // 15: signet.kms.v1.KeyManager.DiscardPendingReshare:output_type -> signet.kms.v1.DiscardPendingReshareResponse
-	14, // 16: signet.kms.v1.KeyManager.RollbackReshare:output_type -> signet.kms.v1.RollbackReshareResponse
-	9,  // 17: signet.kms.v1.KeyManager.GetPublicKey:output_type -> signet.kms.v1.PublicKeyResponse
-	10, // 18: signet.kms.v1.KeyManager.ListKeys:output_type -> signet.kms.v1.KeyListResponse
-	11, // [11:19] is the sub-list for method output_type
-	3,  // [3:11] is the sub-list for method input_type
-	3,  // [3:3] is the sub-list for extension type_name
-	3,  // [3:3] is the sub-list for extension extendee
-	0,  // [0:3] is the sub-list for field type_name
+	10, // 3: signet.kms.v1.KeyListResponse.entries:type_name -> signet.kms.v1.KeyListEntry
+	1,  // 4: signet.kms.v1.KeyManager.StartSession:input_type -> signet.kms.v1.StartSessionRequest
+	3,  // 5: signet.kms.v1.KeyManager.ProcessMessage:input_type -> signet.kms.v1.SessionMessage
+	5,  // 6: signet.kms.v1.KeyManager.AbortSession:input_type -> signet.kms.v1.AbortSessionRequest
+	7,  // 7: signet.kms.v1.KeyManager.CommitReshare:input_type -> signet.kms.v1.KeyRef
+	7,  // 8: signet.kms.v1.KeyManager.DiscardPendingReshare:input_type -> signet.kms.v1.KeyRef
+	14, // 9: signet.kms.v1.KeyManager.RollbackReshare:input_type -> signet.kms.v1.RollbackReshareRequest
+	7,  // 10: signet.kms.v1.KeyManager.GetPublicKey:input_type -> signet.kms.v1.KeyRef
+	8,  // 11: signet.kms.v1.KeyManager.ListKeys:input_type -> signet.kms.v1.GroupRef
+	2,  // 12: signet.kms.v1.KeyManager.StartSession:output_type -> signet.kms.v1.StartSessionResponse
+	3,  // 13: signet.kms.v1.KeyManager.ProcessMessage:output_type -> signet.kms.v1.SessionMessage
+	6,  // 14: signet.kms.v1.KeyManager.AbortSession:output_type -> signet.kms.v1.AbortSessionResponse
+	12, // 15: signet.kms.v1.KeyManager.CommitReshare:output_type -> signet.kms.v1.CommitReshareResponse
+	13, // 16: signet.kms.v1.KeyManager.DiscardPendingReshare:output_type -> signet.kms.v1.DiscardPendingReshareResponse
+	15, // 17: signet.kms.v1.KeyManager.RollbackReshare:output_type -> signet.kms.v1.RollbackReshareResponse
+	9,  // 18: signet.kms.v1.KeyManager.GetPublicKey:output_type -> signet.kms.v1.PublicKeyResponse
+	11, // 19: signet.kms.v1.KeyManager.ListKeys:output_type -> signet.kms.v1.KeyListResponse
+	12, // [12:20] is the sub-list for method output_type
+	4,  // [4:12] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_keymanager_proto_init() }
@@ -939,7 +996,7 @@ func file_keymanager_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_keymanager_proto_rawDesc), len(file_keymanager_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   14,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

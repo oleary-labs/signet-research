@@ -238,8 +238,17 @@ func (lkm *LocalKeyManager) GetKeyInfo(groupID, keyID string, _ Curve) (*KeyInfo
 }
 
 // ListKeys returns all key IDs stored under groupID.
-func (lkm *LocalKeyManager) ListKeys(groupID string) ([]string, error) {
-	return lkm.store.List(groupID)
+func (lkm *LocalKeyManager) ListKeys(groupID string) ([]KeyEntry, error) {
+	ids, err := lkm.store.List(groupID)
+	if err != nil {
+		return nil, err
+	}
+	// LocalKeyManager only supports secp256k1 (bytemare/frost).
+	entries := make([]KeyEntry, len(ids))
+	for i, id := range ids {
+		entries[i] = KeyEntry{KeyID: id, Curve: CurveSecp256k1}
+	}
+	return entries, nil
 }
 
 // ListGroups returns all group IDs that have at least one stored key.

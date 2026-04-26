@@ -314,11 +314,18 @@ impl KeyManager for KmsService {
     ) -> Result<Response<KeyListResponse>, Status> {
         let group_id = hex::encode(&request.into_inner().group_id);
 
-        let key_ids = self
+        let keys = self
             .storage
             .list_keys(&group_id)
             .map_err(|e| Status::internal(e))?;
 
-        Ok(Response::new(KeyListResponse { key_ids }))
+        let entries: Vec<KeyListEntry> = keys.into_iter()
+            .map(|(id, curve)| KeyListEntry {
+                key_id: id,
+                curve: curve.as_str().to_string(),
+            })
+            .collect();
+
+        Ok(Response::new(KeyListResponse { entries }))
     }
 }

@@ -102,21 +102,26 @@ impl Storage {
         Self::get_from_tree(&tree, &storage_key(curve, key_id))
     }
 
-    /// List all active key IDs for a group (across all curves).
-    pub fn list_keys(&self, group_id: &str) -> Result<Vec<String>, String> {
+    /// List all active keys for a group, returning (key_id, curve) pairs.
+    pub fn list_keys(&self, group_id: &str) -> Result<Vec<(String, Curve)>, String> {
         let tree = self
             .db
             .open_tree(Self::active_tree_name(group_id))
             .map_err(|e| format!("open tree: {e}"))?;
-        let mut ids = Vec::new();
+        let mut entries = Vec::new();
         for entry in tree.iter() {
             let (key, _) = entry.map_err(|e| format!("iter: {e}"))?;
             if key.is_empty() { continue; }
-            // Skip the curve prefix byte, return the key_id portion.
+            let prefix = key[0];
+            let curve = match prefix {
+                0x01 => Curve::Secp256k1,
+                0x02 => Curve::Ed25519,
+                _ => continue, // skip unknown prefixes
+            };
             let id = String::from_utf8(key[1..].to_vec()).map_err(|e| format!("key utf8: {e}"))?;
-            ids.push(id);
+            entries.push((id, curve));
         }
-        Ok(ids)
+        Ok(entries)
     }
 
     // -------------------------------------------------------------------------
@@ -327,7 +332,10 @@ mod tests {
         assert!(storage.get_key("group-1", "key-a", &Curve::Ed25519).unwrap().is_none());
 
         let ids = storage.list_keys("group-1").unwrap();
-        assert_eq!(ids, vec!["key-a", "key-b"]);
+        assert_eq!(ids, vec![
+            ("key-a".to_string(), Curve::Secp256k1),
+            ("key-b".to_string(), Curve::Secp256k1),
+        ]);
 
         let empty = storage.list_keys("group-missing").unwrap();
         assert!(empty.is_empty());

@@ -75,11 +75,13 @@ func (m *mockKeyManager) GetKeyInfo(groupID, keyID string, _ Curve) (*KeyInfo, e
 	return nil, nil
 }
 
-func (m *mockKeyManager) ListKeys(groupID string) ([]string, error) {
+func (m *mockKeyManager) ListKeys(groupID string) ([]KeyEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]string, len(m.keys[groupID]))
-	copy(out, m.keys[groupID])
+	out := make([]KeyEntry, len(m.keys[groupID]))
+	for i, k := range m.keys[groupID] {
+		out[i] = KeyEntry{KeyID: k, Curve: CurveSecp256k1}
+	}
 	return out, nil
 }
 
@@ -572,7 +574,7 @@ func TestNode_RunReshareSession_ErrorClosesChannel(t *testing.T) {
 	// Run the session — should fail immediately with "no reshare job".
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err := n.runReshareSession(ctx, groupID, "k1")
+	err := n.runReshareSession(ctx, groupID, "k1", CurveSecp256k1)
 	if err == nil {
 		t.Fatal("expected error")
 	}

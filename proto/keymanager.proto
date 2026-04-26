@@ -147,8 +147,13 @@ message PublicKeyResponse {
   uint64 generation      = 3;
 }
 
+message KeyListEntry {
+  string key_id = 1;
+  string curve  = 2; // "secp256k1" or "ed25519"
+}
+
 message KeyListResponse {
-  repeated string key_ids = 1;
+  repeated KeyListEntry entries = 1;
 }
 
 // ---------------------------------------------------------------------------

@@ -289,7 +289,7 @@ func TestReshareIntegration_ShrinkCommittee(t *testing.T) {
 	}
 
 	// Step 3: Run reshare from node 0 (coordinator).
-	if err := cluster[0].n.runReshareSession(ctx, groupID, keyID); err != nil {
+	if err := cluster[0].n.runReshareSession(ctx, groupID, keyID, CurveSecp256k1); err != nil {
 		t.Fatalf("runReshareSession: %v", err)
 	}
 	t.Log("reshare complete — committee shrank from 5 to 4")
@@ -408,7 +408,7 @@ func TestReshareIntegration_GrowCommittee(t *testing.T) {
 	}
 
 	// Step 3: Run reshare from the first node (coordinator).
-	if err := cluster[0].n.runReshareSession(ctx, groupID, keyID); err != nil {
+	if err := cluster[0].n.runReshareSession(ctx, groupID, keyID, CurveSecp256k1); err != nil {
 		t.Fatalf("runReshareSession: %v", err)
 	}
 	t.Log("reshare complete — committee grew from 3 to 4")

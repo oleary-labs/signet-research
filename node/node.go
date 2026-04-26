@@ -427,8 +427,9 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	type keyEntry struct {
 		GroupID         string   `json:"group_id"`
 		KeyID           string   `json:"key_id"`
+		Curve           string   `json:"curve"`
 		PublicKey       string   `json:"public_key"`
-		EthereumAddress string   `json:"ethereum_address"`
+		EthereumAddress string   `json:"ethereum_address,omitempty"`
 		Threshold       int      `json:"threshold"`
 		Parties         []string `json:"parties"`
 	}
@@ -458,9 +459,8 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entries := make([]keyEntry, 0)
-	for _, kid := range keyIDs {
-		// TODO: list keys across all curves. For now, try secp256k1 first.
-		info, err := n.km.GetKeyInfo(req.GroupID, kid, CurveSecp256k1)
+	for _, ke := range keyIDs {
+		info, err := n.km.GetKeyInfo(req.GroupID, ke.KeyID, ke.Curve)
 		if err != nil || info == nil {
 			continue
 		}
@@ -468,8 +468,10 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 		ethAddr := ""
 		if len(info.GroupKey) > 0 {
 			pubKeyHex = "0x" + hex.EncodeToString(info.GroupKey)
-			if addr, err := network.EthereumAddressFromGroupKey(info.GroupKey); err == nil {
-				ethAddr = "0x" + hex.EncodeToString(addr[:])
+			if ke.Curve == CurveSecp256k1 {
+				if addr, err := network.EthereumAddressFromGroupKey(info.GroupKey); err == nil {
+					ethAddr = "0x" + hex.EncodeToString(addr[:])
+				}
 			}
 		}
 		parties := make([]string, len(info.Parties))
@@ -478,7 +480,8 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 		}
 		entries = append(entries, keyEntry{
 			GroupID:         req.GroupID,
-			KeyID:           kid,
+			KeyID:           ke.KeyID,
+			Curve:           string(ke.Curve),
 			PublicKey:       pubKeyHex,
 			EthereumAddress: ethAddr,
 			Threshold:       info.Threshold,

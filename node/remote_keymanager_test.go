@@ -82,8 +82,8 @@ func TestRemoteKeyManager_Connection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListKeys: %v", err)
 	}
-	if len(listResp.KeyIds) != 0 {
-		t.Fatalf("expected empty key list, got: %v", listResp.KeyIds)
+	if len(listResp.Entries) != 0 {
+		t.Fatalf("expected empty key list, got: %v", listResp.Entries)
 	}
 
 	// AbortSession for non-existent session succeeds (idempotent).

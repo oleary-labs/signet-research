@@ -43,8 +43,8 @@ type KeyManager interface {
 	// multiple curves.
 	GetKeyInfo(groupID, keyID string, curve Curve) (*KeyInfo, error)
 
-	// ListKeys returns all key IDs stored under groupID.
-	ListKeys(groupID string) ([]string, error)
+	// ListKeys returns all keys stored under groupID, each with its curve.
+	ListKeys(groupID string) ([]KeyEntry, error)
 
 	// ListGroups returns all group IDs that have at least one stored key.
 	ListGroups() ([]string, error)
