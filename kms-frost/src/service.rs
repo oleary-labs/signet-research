@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
+use crate::curve::Curve;
 use crate::params;
 use crate::proto;
 use crate::proto::key_manager_server::KeyManager;
@@ -23,6 +24,15 @@ use crate::types::{OutgoingMessage, StepOutput};
 pub struct KmsService {
     storage: Arc<Storage>,
     sessions: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<Session>>>>>,
+}
+
+/// Parse a curve string from proto, defaulting to secp256k1 if empty.
+fn parse_curve(s: &str) -> Result<Curve, Status> {
+    match s {
+        "" | "secp256k1" => Ok(Curve::Secp256k1),
+        "ed25519" => Ok(Curve::Ed25519),
+        _ => Err(Status::invalid_argument(format!("unknown curve: {s}"))),
+    }
 }
 
 impl KmsService {
@@ -232,9 +242,10 @@ impl KeyManager for KmsService {
         let key_id = &req.key_id;
         info!(group_id = %group_id, key_id = %key_id, "commit_reshare");
 
+        let curve = parse_curve(&req.curve)?;
         let generation = self
             .storage
-            .commit_reshare(&group_id, key_id)
+            .commit_reshare(&group_id, key_id, &curve)
             .map_err(|e| Status::internal(e))?;
 
         Ok(Response::new(CommitReshareResponse { generation }))
@@ -249,8 +260,9 @@ impl KeyManager for KmsService {
         let key_id = &req.key_id;
         info!(group_id = %group_id, key_id = %key_id, "discard_pending_reshare");
 
+        let curve = parse_curve(&req.curve)?;
         self.storage
-            .discard_pending_reshare(&group_id, key_id)
+            .discard_pending_reshare(&group_id, key_id, &curve)
             .map_err(|e| Status::internal(e))?;
 
         Ok(Response::new(DiscardPendingReshareResponse {}))
@@ -266,8 +278,9 @@ impl KeyManager for KmsService {
         let generation = req.generation;
         info!(group_id = %group_id, key_id = %key_id, generation = generation, "rollback_reshare");
 
+        let curve = parse_curve(&req.curve)?;
         self.storage
-            .rollback_reshare(&group_id, key_id, generation)
+            .rollback_reshare(&group_id, key_id, &curve, generation)
             .map_err(|e| Status::internal(e))?;
 
         Ok(Response::new(RollbackReshareResponse {}))
@@ -281,11 +294,12 @@ impl KeyManager for KmsService {
         let group_id = hex::encode(&req.group_id);
         let key_id = &req.key_id;
 
+        let curve = parse_curve(&req.curve)?;
         let stored = self
             .storage
-            .get_key(&group_id, key_id)
+            .get_key(&group_id, key_id, &curve)
             .map_err(|e| Status::internal(e))?
-            .ok_or_else(|| Status::not_found(format!("key not found: {group_id}/{key_id}")))?;
+            .ok_or_else(|| Status::not_found(format!("key not found: {group_id}/{key_id} curve={curve}")))?;
 
         Ok(Response::new(PublicKeyResponse {
             group_key: stored.group_key,

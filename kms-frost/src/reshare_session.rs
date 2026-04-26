@@ -7,6 +7,7 @@ use frost_core::{Field, Group};
 use sha2::Digest;
 use tracing::debug;
 
+use crate::curve::Curve;
 use crate::reshare::{
     self, Polynomial, ReshareParams, ReshareR1Payload, ReshareR2Payload, ReshareR3Payload,
 };
@@ -183,7 +184,8 @@ fn start_reshare<C: Ciphersuite>(
     let self_old_scalar = if is_old { Some(derive_scalar::<C>(&params.party_id)?) } else { None };
     let self_new_scalar = if is_new { Some(derive_scalar::<C>(&params.party_id)?) } else { None };
 
-    let stored = storage.get_key(&params.group_id, &params.key_id)?;
+    let curve = Curve::from_ciphersuite::<C>();
+    let stored = storage.get_key(&params.group_id, &params.key_id, &curve)?;
     let (old_secret, group_key, generation) = if is_old {
         let s = stored.ok_or_else(|| {
             format!("reshare: old party has no key for {}/{}", params.group_id, params.key_id)
@@ -567,7 +569,8 @@ fn process_reshare<C: Ciphersuite>(
                 pkp_hash = %hex::encode(&sha2::Sha256::digest(&pkp_bytes)[..8]),
                 "reshare: storing pending key"
             );
-            if let Err(e) = storage.put_pending(&params.group_id, &params.key_id, &stored) {
+            let curve = Curve::from_ciphersuite::<C>();
+            if let Err(e) = storage.put_pending(&params.group_id, &params.key_id, &curve, &stored) {
                 return (ReshareState::Completed, Err(ProcessError::Invalid(format!("persist pending reshare: {e}"))));
             }
 

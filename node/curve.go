@@ -1,0 +1,50 @@
+package node
+
+// Curve identifies a FROST ciphersuite for keygen, sign, and storage.
+type Curve string
+
+const (
+	CurveSecp256k1 Curve = "secp256k1"
+	CurveEd25519   Curve = "ed25519"
+)
+
+// Valid returns true if c is a recognized curve.
+func (c Curve) Valid() bool {
+	return c == CurveSecp256k1 || c == CurveEd25519
+}
+
+// String returns the wire name (used in CBOR params and API responses).
+func (c Curve) String() string {
+	return string(c)
+}
+
+// StoragePrefix returns the single-byte prefix used in KMS sled storage keys.
+// Matches kms-frost/src/curve.rs Curve::storage_prefix().
+func (c Curve) StoragePrefix() byte {
+	switch c {
+	case CurveSecp256k1:
+		return 0x01
+	case CurveEd25519:
+		return 0x02
+	default:
+		return 0x00
+	}
+}
+
+// CurveFromStoragePrefix returns the Curve for a storage prefix byte.
+func CurveFromStoragePrefix(b byte) (Curve, bool) {
+	switch b {
+	case 0x01:
+		return CurveSecp256k1, true
+	case 0x02:
+		return CurveEd25519, true
+	default:
+		return "", false
+	}
+}
+
+// KeyEntry identifies a stored key by its ID and curve.
+type KeyEntry struct {
+	KeyID string
+	Curve Curve
+}

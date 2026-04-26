@@ -186,9 +186,10 @@ impl<C: Ciphersuite> TypedSession<C> {
         let pmap = PartyMap::<C>::new(&params.signer_ids)?;
         let self_id = pmap.frost_id(&params.party_id)?;
 
+        let curve = Curve::from_ciphersuite::<C>();
         let stored = storage
-            .get_key(&params.group_id, &params.key_id)?
-            .ok_or_else(|| format!("key not found: group={} key={}", params.group_id, params.key_id))?;
+            .get_key(&params.group_id, &params.key_id, &curve)?
+            .ok_or_else(|| format!("key not found: group={} key={} curve={}", params.group_id, params.key_id, curve))?;
 
         debug!(
             key_id = params.key_id.as_str(),
@@ -458,8 +459,9 @@ fn process_typed<C: Ciphersuite>(
                     verifying_share: verifying_share.clone(),
                     generation: 0,
                 };
+                let curve = Curve::from_ciphersuite::<C>();
                 try_invalid!(
-                    storage.put_key(&params.group_id, &params.key_id, &stored),
+                    storage.put_key(&params.group_id, &params.key_id, &curve, &stored),
                     TypedState::Completed
                 );
 
@@ -1075,7 +1077,7 @@ mod tests {
 
         for pid in &new_ids {
             let (_, storage) = sessions.get(pid).unwrap();
-            storage.commit_reshare(GROUP_ID, KEY_ID).unwrap();
+            storage.commit_reshare(GROUP_ID, KEY_ID, &Curve::Secp256k1).unwrap();
         }
 
         for (pid, (_, storage)) in sessions {

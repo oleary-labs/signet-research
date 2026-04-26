@@ -64,7 +64,7 @@ func (m *mockKeyManager) RunReshare(ctx context.Context, p ReshareParams) (*Resh
 	return &ReshareResult{OldOnly: false, Generation: 1}, nil
 }
 
-func (m *mockKeyManager) GetKeyInfo(groupID, keyID string) (*KeyInfo, error) {
+func (m *mockKeyManager) GetKeyInfo(groupID, keyID string, _ Curve) (*KeyInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, k := range m.keys[groupID] {
@@ -93,9 +93,9 @@ func (m *mockKeyManager) ListGroups() ([]string, error) {
 	return out, nil
 }
 
-func (m *mockKeyManager) CommitReshare(groupID, keyID string) error               { return nil }
-func (m *mockKeyManager) DiscardPendingReshare(groupID, keyID string) error       { return nil }
-func (m *mockKeyManager) RollbackReshare(groupID, keyID string, gen uint64) error { return nil }
+func (m *mockKeyManager) CommitReshare(groupID, keyID string, _ Curve) error               { return nil }
+func (m *mockKeyManager) DiscardPendingReshare(groupID, keyID string, _ Curve) error       { return nil }
+func (m *mockKeyManager) RollbackReshare(groupID, keyID string, _ Curve, gen uint64) error { return nil }
 func (m *mockKeyManager) Close() error                                            { return nil }
 
 var _ KeyManager = (*mockKeyManager)(nil)

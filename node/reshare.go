@@ -273,7 +273,7 @@ func (n *Node) runReshareSession(ctx context.Context, groupID, keyID string) (er
 		if lkm, ok := n.km.(*LocalKeyManager); ok {
 			if cfg, err := lkm.loadConfig(groupID, keyID); err == nil && cfg != nil && cfg.Generation > 0 {
 				targetGen := cfg.Generation - 1
-				if err := n.km.RollbackReshare(groupID, keyID, targetGen); err != nil {
+				if err := n.km.RollbackReshare(groupID, keyID, CurveSecp256k1, targetGen); err != nil {
 					return fmt.Errorf("coordinator self-rollback to gen %d: %w", targetGen, err)
 				}
 				n.log.Warn("reshare: coordinator rolled back previously committed key",
@@ -286,7 +286,7 @@ func (n *Node) runReshareSession(ctx context.Context, groupID, keyID string) (er
 	}
 
 	// Discard any stale pending from a previous failed attempt.
-	n.km.DiscardPendingReshare(groupID, keyID)
+	n.km.DiscardPendingReshare(groupID, keyID, CurveSecp256k1)
 
 	result, err := n.km.RunReshare(sessCtx, ReshareParams{
 		Host:         n.host,
@@ -298,10 +298,11 @@ func (n *Node) runReshareSession(ctx context.Context, groupID, keyID string) (er
 		NewParties:   job.NewParties,
 		OldThreshold: job.OldThreshold,
 		NewThreshold: job.NewThreshold,
+		Curve:        CurveSecp256k1,
 	})
 	if err != nil {
 		// Protocol failed — discard any pending result so old share stays active.
-		n.km.DiscardPendingReshare(groupID, keyID)
+		n.km.DiscardPendingReshare(groupID, keyID, CurveSecp256k1)
 		return fmt.Errorf("protocol: %w", err)
 	}
 
@@ -320,12 +321,12 @@ func (n *Node) runReshareSession(ctx context.Context, groupID, keyID string) (er
 		// At least one participant failed to commit. Discard our own pending
 		// result so all nodes stay on the current generation. The coordinator
 		// retry loop will attempt the reshare again for this key.
-		n.km.DiscardPendingReshare(groupID, keyID)
+		n.km.DiscardPendingReshare(groupID, keyID, CurveSecp256k1)
 		return fmt.Errorf("commit aborted (participant failure): %w", commitErr)
 	}
 
 	// All participants committed — safe to commit locally.
-	if err := n.km.CommitReshare(groupID, keyID); err != nil {
+	if err := n.km.CommitReshare(groupID, keyID, CurveSecp256k1); err != nil {
 		n.log.Error("reshare: local commit failed",
 			zap.String("group_id", groupID),
 			zap.String("key_id", keyID),
@@ -560,6 +561,7 @@ func (n *Node) runReshareBatch(ctx context.Context, groupID string, job *Reshare
 			NewParties:   job.NewParties,
 			OldThreshold: job.OldThreshold,
 			NewThreshold: job.NewThreshold,
+			Curve:        CurveSecp256k1,
 		})
 		sessCancel()
 		sn.Close()

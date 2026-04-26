@@ -374,8 +374,8 @@ func (n *Node) markKeygenDone(groupID, keyID string) {
 // awaitKey returns the KeyInfo for (groupID, keyID), waiting up to timeout
 // for a concurrent keygen to finish. Returns (nil, nil) if the key is genuinely
 // absent and no keygen is in flight.
-func (n *Node) awaitKey(groupID, keyID string, timeout time.Duration) (*KeyInfo, error) {
-	info, err := n.km.GetKeyInfo(groupID, keyID)
+func (n *Node) awaitKey(groupID, keyID string, curve Curve, timeout time.Duration) (*KeyInfo, error) {
+	info, err := n.km.GetKeyInfo(groupID, keyID, curve)
 	if err != nil || info != nil {
 		return info, err
 	}
@@ -391,7 +391,7 @@ func (n *Node) awaitKey(groupID, keyID string, timeout time.Duration) (*KeyInfo,
 
 	select {
 	case <-ch:
-		return n.km.GetKeyInfo(groupID, keyID)
+		return n.km.GetKeyInfo(groupID, keyID, curve)
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("timeout waiting for keygen to complete for key %s", keyID)
 	case <-n.ctx.Done():
@@ -459,7 +459,8 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 
 	entries := make([]keyEntry, 0)
 	for _, kid := range keyIDs {
-		info, err := n.km.GetKeyInfo(req.GroupID, kid)
+		// TODO: list keys across all curves. For now, try secp256k1 first.
+		info, err := n.km.GetKeyInfo(req.GroupID, kid, CurveSecp256k1)
 		if err != nil || info == nil {
 			continue
 		}
@@ -666,7 +667,12 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 	}
 	// Default curve to secp256k1.
 	if req.Curve == "" {
-		req.Curve = "secp256k1"
+		req.Curve = string(CurveSecp256k1)
+	}
+	curve := Curve(req.Curve)
+	if !curve.Valid() {
+		httpError(w, http.StatusBadRequest, "unsupported curve: "+req.Curve)
+		return
 	}
 	if req.GroupID == "" {
 		httpError(w, http.StatusBadRequest, "group_id is required")
@@ -715,7 +721,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if info, _ := n.km.GetKeyInfo(req.GroupID, keyID); info != nil {
+	if info, _ := n.km.GetKeyInfo(req.GroupID, keyID, curve); info != nil {
 		ethAddr, _ := network.EthereumAddressFromGroupKey(info.GroupKey)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -751,6 +757,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		KeyID:     keyID,
 		Parties:   sortedParties,
 		Threshold: grp.Threshold,
+		Curve:     string(curve),
 		Auth:      authProof,
 	}); err != nil {
 		httpError(w, http.StatusInternalServerError, "coordinate: "+err.Error())
@@ -765,7 +772,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		KeyID:     keyID,
 		Parties:   sortedParties,
 		Threshold: grp.Threshold,
-		Curve:     req.Curve,
+		Curve:     curve,
 	})
 	if err != nil {
 		n.log.Error("keygen failed",
@@ -824,6 +831,7 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		GroupID     string `json:"group_id"`
 		KeyID       string `json:"key_id"`
 		KeySuffix   string `json:"key_suffix"`
+		Curve       string `json:"curve"`
 		MessageHash string `json:"message_hash"`
 		SessionPub  string `json:"session_pub"`
 		RequestSig  string `json:"request_sig"`
@@ -832,6 +840,14 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "decode body: "+err.Error())
+		return
+	}
+	if req.Curve == "" {
+		req.Curve = string(CurveSecp256k1)
+	}
+	signCurve := Curve(req.Curve)
+	if !signCurve.Valid() {
+		httpError(w, http.StatusBadRequest, "unsupported curve: "+req.Curve)
 		return
 	}
 	if req.GroupID == "" || req.MessageHash == "" {
@@ -903,7 +919,7 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	keyInfo, err := n.km.GetKeyInfo(req.GroupID, keyID)
+	keyInfo, err := n.km.GetKeyInfo(req.GroupID, keyID, signCurve)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "load config: "+err.Error())
 		return
@@ -946,16 +962,11 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		SignNonce:   nonce,
 		Signers:     sortedSigners,
 		MessageHash: msgHash,
+		Curve:       string(signCurve),
 		Auth:        authProof,
 	}); err != nil {
 		httpError(w, http.StatusInternalServerError, "coordinate: "+err.Error())
 		return
-	}
-
-	// Curve is a group-level property. Use keyInfo if available, default to secp256k1.
-	curve := keyInfo.Curve
-	if curve == "" {
-		curve = "secp256k1"
 	}
 
 	sig, err := n.km.RunSign(r.Context(), SignParams{
@@ -966,7 +977,7 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		KeyID:       keyID,
 		Signers:     sortedSigners,
 		MessageHash: msgHash,
-		Curve:       curve,
+		Curve:       signCurve,
 	})
 	if err != nil {
 		n.log.Error("sign failed",

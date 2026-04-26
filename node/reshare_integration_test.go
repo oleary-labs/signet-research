@@ -275,7 +275,7 @@ func TestReshareIntegration_ShrinkCommittee(t *testing.T) {
 	t.Log("keygen complete on 4-node committee")
 
 	// Capture original group key.
-	info0, err := cluster[0].km.GetKeyInfo(groupID, keyID)
+	info0, err := cluster[0].km.GetKeyInfo(groupID, keyID, CurveSecp256k1)
 	if err != nil || info0 == nil {
 		t.Fatalf("get key info: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestReshareIntegration_ShrinkCommittee(t *testing.T) {
 
 	// Step 4: Verify remaining 4 nodes have the same group key.
 	for i := 0; i < 4; i++ {
-		info, err := cluster[i].km.GetKeyInfo(groupID, keyID)
+		info, err := cluster[i].km.GetKeyInfo(groupID, keyID, CurveSecp256k1)
 		if err != nil {
 			t.Fatalf("party %d get key info: %v", i, err)
 		}
@@ -326,7 +326,7 @@ func TestReshareIntegration_ShrinkCommittee(t *testing.T) {
 	}
 
 	// Step 5: Verify removed node (node 4) got sentinel config.
-	removedInfo, err := cluster[4].km.GetKeyInfo(groupID, keyID)
+	removedInfo, err := cluster[4].km.GetKeyInfo(groupID, keyID, CurveSecp256k1)
 	if err != nil {
 		t.Fatalf("removed node get key info: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestReshareIntegration_GrowCommittee(t *testing.T) {
 	t.Log("keygen complete on 3-node committee")
 
 	// Capture original group key.
-	info0, err := cluster[0].km.GetKeyInfo(groupID, keyID)
+	info0, err := cluster[0].km.GetKeyInfo(groupID, keyID, CurveSecp256k1)
 	if err != nil || info0 == nil {
 		t.Fatalf("get key info: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestReshareIntegration_GrowCommittee(t *testing.T) {
 
 	// Step 4: Verify all 4 nodes have the same group key.
 	for i, tn := range cluster {
-		info, err := tn.km.GetKeyInfo(groupID, keyID)
+		info, err := tn.km.GetKeyInfo(groupID, keyID, CurveSecp256k1)
 		if err != nil {
 			t.Fatalf("party %d get key info: %v", i, err)
 		}
@@ -494,7 +494,7 @@ func TestReshareIntegration_OnDemandViaSign(t *testing.T) {
 	t.Log("keygen complete on 3-node committee")
 
 	// Capture original group key.
-	info0, err := cluster[0].km.GetKeyInfo(groupID, keyID)
+	info0, err := cluster[0].km.GetKeyInfo(groupID, keyID, CurveSecp256k1)
 	if err != nil || info0 == nil {
 		t.Fatalf("get key info: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestReshareIntegration_OnDemandViaSign(t *testing.T) {
 
 	// Step 4: Verify group key preserved on all 4 nodes.
 	for i, tn := range cluster {
-		info, err := tn.km.GetKeyInfo(groupID, keyID)
+		info, err := tn.km.GetKeyInfo(groupID, keyID, CurveSecp256k1)
 		if err != nil || info == nil {
 			t.Fatalf("party %d: key missing after reshare: %v", i, err)
 		}
@@ -643,7 +643,7 @@ func TestReshareIntegration_ScaleReshare(t *testing.T) {
 	}
 	origGroupKeys := make(map[string][]byte, sampleSize)
 	for i := 0; i < sampleSize; i++ {
-		info, err := cluster[0].km.GetKeyInfo(groupID, keyIDs[i])
+		info, err := cluster[0].km.GetKeyInfo(groupID, keyIDs[i], CurveSecp256k1)
 		if err != nil || info == nil {
 			t.Fatalf("get key info %s: %v", keyIDs[i], err)
 		}
@@ -685,7 +685,7 @@ func TestReshareIntegration_ScaleReshare(t *testing.T) {
 	// Phase 4: verify group keys preserved.
 	for keyID, origKey := range origGroupKeys {
 		for i := 0; i < numNodes-1; i++ {
-			info, err := cluster[i].km.GetKeyInfo(groupID, keyID)
+			info, err := cluster[i].km.GetKeyInfo(groupID, keyID, CurveSecp256k1)
 			if err != nil || info == nil {
 				t.Fatalf("node %d key %s: missing after reshare", i, keyID)
 			}

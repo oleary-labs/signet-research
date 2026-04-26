@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.1
 // - protoc             v7.34.1
-// source: proto/keymanager.proto
+// source: keymanager.proto
 
 package kmspb
 
@@ -412,5 +412,5 @@ var KeyManager_ServiceDesc = grpc.ServiceDesc{
 			ClientStreams: true,
 		},
 	},
-	Metadata: "proto/keymanager.proto",
+	Metadata: "keymanager.proto",
 }

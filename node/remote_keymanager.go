@@ -157,43 +157,47 @@ func (rkm *RemoteKeyManager) RunReshare(ctx context.Context, p ReshareParams) (*
 }
 
 // CommitReshare promotes a pending reshare result to active in the KMS.
-func (rkm *RemoteKeyManager) CommitReshare(groupID, keyID string) error {
+func (rkm *RemoteKeyManager) CommitReshare(groupID, keyID string, curve Curve) error {
 	gid, _ := hex.DecodeString(strings.TrimPrefix(groupID, "0x"))
 	_, err := rkm.client.CommitReshare(context.Background(), &kmspb.KeyRef{
 		GroupId: gid,
 		KeyId:   keyID,
+		Curve:   string(curve),
 	})
 	return err
 }
 
 // DiscardPendingReshare removes a pending reshare result in the KMS.
-func (rkm *RemoteKeyManager) DiscardPendingReshare(groupID, keyID string) error {
+func (rkm *RemoteKeyManager) DiscardPendingReshare(groupID, keyID string, curve Curve) error {
 	gid, _ := hex.DecodeString(strings.TrimPrefix(groupID, "0x"))
 	_, err := rkm.client.DiscardPendingReshare(context.Background(), &kmspb.KeyRef{
 		GroupId: gid,
 		KeyId:   keyID,
+		Curve:   string(curve),
 	})
 	return err
 }
 
 // RollbackReshare restores a previous generation as active in the KMS.
-func (rkm *RemoteKeyManager) RollbackReshare(groupID, keyID string, generation uint64) error {
+func (rkm *RemoteKeyManager) RollbackReshare(groupID, keyID string, curve Curve, generation uint64) error {
 	gid, _ := hex.DecodeString(strings.TrimPrefix(groupID, "0x"))
 	_, err := rkm.client.RollbackReshare(context.Background(), &kmspb.RollbackReshareRequest{
 		GroupId:    gid,
 		KeyId:      keyID,
 		Generation: generation,
+		Curve:      string(curve),
 	})
 	return err
 }
 
 // GetKeyInfo returns public metadata for a stored key.
 // Returns (nil, nil) if the key does not exist (matching KeyManager contract).
-func (rkm *RemoteKeyManager) GetKeyInfo(groupID, keyID string) (*KeyInfo, error) {
+func (rkm *RemoteKeyManager) GetKeyInfo(groupID, keyID string, curve Curve) (*KeyInfo, error) {
 	gid, _ := hex.DecodeString(strings.TrimPrefix(groupID, "0x"))
 	resp, err := rkm.client.GetPublicKey(context.Background(), &kmspb.KeyRef{
 		GroupId: gid,
 		KeyId:   keyID,
+		Curve:   string(curve),
 	})
 	if err != nil {
 		if st, ok := grpcstatus.FromError(err); ok && st.Code() == codes.NotFound {
@@ -204,6 +208,7 @@ func (rkm *RemoteKeyManager) GetKeyInfo(groupID, keyID string) (*KeyInfo, error)
 	return &KeyInfo{
 		GroupKey: resp.GroupKey,
 		PartyID:  rkm.selfID,
+		Curve:    curve,
 	}, nil
 }
 
@@ -392,7 +397,7 @@ func encodeKeygenParams(p KeygenParams) ([]byte, error) {
 		PartyID:   string(p.Host.Self()),
 		PartyIDs:  partyIDs,
 		Threshold: p.Threshold,
-		Curve:     p.Curve,
+		Curve:     string(p.Curve),
 	})
 }
 
@@ -407,7 +412,7 @@ func encodeSignParams(p SignParams) ([]byte, error) {
 		PartyID:     string(p.Host.Self()),
 		SignerIDs:   signerIDs,
 		MessageHash: p.MessageHash,
-		Curve:       p.Curve,
+		Curve:       string(p.Curve),
 	})
 }
 
@@ -438,7 +443,7 @@ func encodeReshareParams(p ReshareParams) ([]byte, error) {
 		OldPartyIDs:  oldIDs,
 		NewPartyIDs:  newIDs,
 		NewThreshold: p.NewThreshold,
-		Curve:        p.Curve,
+		Curve:        string(p.Curve),
 	})
 }
 

@@ -150,7 +150,7 @@ func (lkm *LocalKeyManager) RunReshare(ctx context.Context, p ReshareParams) (*R
 
 // CommitReshare promotes a pending reshare result to active. The current
 // active config is archived as a historical version before being overwritten.
-func (lkm *LocalKeyManager) CommitReshare(groupID, keyID string) error {
+func (lkm *LocalKeyManager) CommitReshare(groupID, keyID string, _ Curve) error {
 	if lkm.versions == nil {
 		return nil // no version store — RunReshare already wrote directly
 	}
@@ -191,7 +191,7 @@ func (lkm *LocalKeyManager) CommitReshare(groupID, keyID string) error {
 
 // DiscardPendingReshare removes a pending reshare result without promoting it.
 // The active key is untouched.
-func (lkm *LocalKeyManager) DiscardPendingReshare(groupID, keyID string) error {
+func (lkm *LocalKeyManager) DiscardPendingReshare(groupID, keyID string, _ Curve) error {
 	if lkm.versions == nil {
 		return nil
 	}
@@ -200,7 +200,7 @@ func (lkm *LocalKeyManager) DiscardPendingReshare(groupID, keyID string) error {
 
 // RollbackReshare restores a previous version as the active key. Used when a
 // retry discovers that this node committed a reshare but other nodes didn't.
-func (lkm *LocalKeyManager) RollbackReshare(groupID, keyID string, generation uint64) error {
+func (lkm *LocalKeyManager) RollbackReshare(groupID, keyID string, _ Curve, generation uint64) error {
 	if lkm.versions == nil {
 		return fmt.Errorf("no version store available")
 	}
@@ -226,7 +226,7 @@ func (lkm *LocalKeyManager) RollbackReshare(groupID, keyID string, generation ui
 }
 
 // GetKeyInfo returns public metadata for a stored key, or (nil, nil) if not found.
-func (lkm *LocalKeyManager) GetKeyInfo(groupID, keyID string) (*KeyInfo, error) {
+func (lkm *LocalKeyManager) GetKeyInfo(groupID, keyID string, _ Curve) (*KeyInfo, error) {
 	cfg, err := lkm.loadConfig(groupID, keyID)
 	if err != nil {
 		return nil, err

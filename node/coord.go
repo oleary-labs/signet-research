@@ -62,6 +62,9 @@ type coordMsg struct {
 	// plus session key binding.
 	Auth *AuthProof `cbor:"10,keyasint,omitempty"`
 
+	// Curve: "secp256k1" or "ed25519". Empty defaults to "secp256k1".
+	Curve string `cbor:"16,keyasint,omitempty"`
+
 	// Reshare only: old and new committee definitions.
 	OldParties   []tss.PartyID `cbor:"11,keyasint,omitempty"`
 	NewParties   []tss.PartyID `cbor:"12,keyasint,omitempty"`
@@ -176,7 +179,11 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 
 	switch msg.Type {
 	case msgKeygen:
-		if info, _ := n.km.GetKeyInfo(msg.GroupID, msg.KeyID); info != nil {
+		kgCurve := Curve(msg.Curve)
+		if kgCurve == "" {
+			kgCurve = CurveSecp256k1
+		}
+		if info, _ := n.km.GetKeyInfo(msg.GroupID, msg.KeyID, kgCurve); info != nil {
 			n.log.Warn("coord: keygen rejected, key already exists",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
@@ -211,6 +218,10 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 			n.log.Info("coord: keygen started",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
+			curve := Curve(msg.Curve)
+			if curve == "" {
+				curve = CurveSecp256k1
+			}
 			_, err := n.km.RunKeygen(sessCtx, KeygenParams{
 				Host:      n.host,
 				SN:        sn,
@@ -219,6 +230,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				KeyID:     msg.KeyID,
 				Parties:   msg.Parties,
 				Threshold: msg.Threshold,
+				Curve:     curve,
 			})
 			if err != nil {
 				n.log.Error("coord: keygen failed",
@@ -249,12 +261,18 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		go func() {
 			defer sessCancel()
 			defer sn.Close()
+
+			curve := Curve(msg.Curve)
+			if curve == "" {
+				curve = CurveSecp256k1
+			}
+
 			n.log.Info("coord: sign started",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
 
 			// Wait for any pending keygen to finish before attempting to sign.
-			info, err := n.awaitKey(msg.GroupID, msg.KeyID, 10*time.Second)
+			info, err := n.awaitKey(msg.GroupID, msg.KeyID, curve, 10*time.Second)
 			if err != nil {
 				n.log.Error("coord: load config",
 					zap.String("group_id", msg.GroupID),
@@ -268,7 +286,6 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 					zap.String("key_id", msg.KeyID))
 				return
 			}
-
 			_, err = n.km.RunSign(sessCtx, SignParams{
 				Host:        n.host,
 				SN:          sn,
@@ -277,6 +294,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				KeyID:       msg.KeyID,
 				Signers:     msg.Signers,
 				MessageHash: msg.MessageHash,
+				Curve:       curve,
 			})
 			if err != nil {
 				n.log.Error("coord: sign failed",
@@ -291,6 +309,11 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		}()
 
 	case msgReshare:
+		// Compute curve for reshare early — needed for storage lookups.
+		msgCurve := Curve(msg.Curve)
+		if msgCurve == "" {
+			msgCurve = CurveSecp256k1
+		}
 		// Reshare is administrative — no auth validation required.
 		// Validate that this node knows about the reshare job.
 		if n.reshareStore == nil {
@@ -324,7 +347,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		// with consistent key state.
 		done, _ := n.reshareStore.IsKeyDone(msg.GroupID, msg.KeyID)
 		if done {
-			info, _ := n.km.GetKeyInfo(msg.GroupID, msg.KeyID)
+			info, _ := n.km.GetKeyInfo(msg.GroupID, msg.KeyID, msgCurve)
 			if info != nil {
 				// Active key is at generation N (post-reshare). Roll back to N-1.
 				gen := uint64(0) // default: roll back to generation 0
@@ -334,7 +357,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 						gen = cfg.Generation - 1
 					}
 				}
-				if err := n.km.RollbackReshare(msg.GroupID, msg.KeyID, gen); err != nil {
+				if err := n.km.RollbackReshare(msg.GroupID, msg.KeyID, msgCurve, gen); err != nil {
 					n.log.Error("coord: reshare rollback failed, NACKing",
 						zap.String("group_id", msg.GroupID),
 						zap.String("key_id", msg.KeyID),
@@ -363,7 +386,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		}
 
 		// Discard any stale pending result from a previous failed attempt.
-		n.km.DiscardPendingReshare(msg.GroupID, msg.KeyID)
+		n.km.DiscardPendingReshare(msg.GroupID, msg.KeyID, msgCurve)
 
 		allParties := msg.Parties // old ∪ new
 		sessID := reshareSessionID(msg.GroupID, msg.KeyID, msg.ReshareNonce)
@@ -407,6 +430,10 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				return
 			}
 
+			reshCurve := Curve(msg.Curve)
+			if reshCurve == "" {
+				reshCurve = CurveSecp256k1
+			}
 			result, err := n.km.RunReshare(sessCtx, ReshareParams{
 				Host:         n.host,
 				SN:           sn,
@@ -417,9 +444,10 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				NewParties:   msg.NewParties,
 				OldThreshold: msg.Threshold,
 				NewThreshold: msg.NewThreshold,
+				Curve:        reshCurve,
 			})
 			if err != nil {
-				n.km.DiscardPendingReshare(msg.GroupID, msg.KeyID)
+				n.km.DiscardPendingReshare(msg.GroupID, msg.KeyID, reshCurve)
 				n.completeReshareKey(msg.GroupID, msg.KeyID, false)
 				n.log.Error("coord: reshare failed",
 					zap.String("group_id", msg.GroupID),
@@ -479,6 +507,10 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 			sessCtx, sessCancel := context.WithTimeout(n.ctx, 15*time.Second)
 			sn := n.reshareMux.Session(sessCtx, sessID, allParties)
 
+			batchCurve := Curve(msg.Curve)
+			if batchCurve == "" {
+				batchCurve = CurveSecp256k1
+			}
 			result, err := n.km.RunReshare(sessCtx, ReshareParams{
 				Host:         n.host,
 				SN:           sn,
@@ -489,6 +521,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				NewParties:   msg.NewParties,
 				OldThreshold: msg.Threshold,
 				NewThreshold: msg.NewThreshold,
+				Curve:        batchCurve,
 			})
 			sessCancel()
 			sn.Close()
@@ -511,6 +544,10 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		}
 
 	case msgReshareCommit:
+		commitCurve := Curve(msg.Curve)
+		if commitCurve == "" {
+			commitCurve = CurveSecp256k1
+		}
 		// Coordinator says the reshare protocol succeeded on all nodes.
 		// Wait for the participant's reshare goroutine to finish writing
 		// the pending result — the commit can arrive before the local
@@ -518,7 +555,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		n.waitPendingReady(msg.GroupID, msg.KeyID, 10*time.Second)
 
 		// Promote pending result to active and record completion.
-		if err := n.km.CommitReshare(msg.GroupID, msg.KeyID); err != nil {
+		if err := n.km.CommitReshare(msg.GroupID, msg.KeyID, commitCurve); err != nil {
 			n.log.Error("coord: reshare commit failed",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID),
