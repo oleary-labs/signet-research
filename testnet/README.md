@@ -1,71 +1,37 @@
-# Signet Testnet Deployment
+# Signet Testnet
 
-Deploy a 5-node Signet cluster across AWS US regions with contracts on Sepolia.
+3-node Signet cluster on AWS (us-east-1, multi-AZ) with contracts on Sepolia.
 
-## Architecture
+## Current deployment
 
-| Node  | Region       |
-|-------|-------------|
-| node1 | us-east-1    |
-| node2 | us-east-2    |
-| node3 | us-west-1    |
-| node4 | us-west-2    |
-| node5 | ca-central-1 |
+| Node  | AZ           | API                          |
+|-------|-------------|------------------------------|
+| node1 | us-east-1a   | http://54.90.227.156:8080    |
+| node2 | us-east-1b   | http://44.214.181.89:8080    |
+| node3 | us-east-1c   | http://44.205.254.164:8080   |
 
-- Instance type: t3.medium (2 vCPU, 4 GB)
-- Signing group: 3-of-5 (threshold=2)
-- Chain: Sepolia
-- KMS: disabled (in-process Go FROST)
+- **Instance type:** t3.medium (2 vCPU, 4 GB)
+- **Signing group:** 2-of-3 (threshold=2)
+- **Chain:** Sepolia
+- **Auth:** Google OAuth (accounts.google.com)
+- **KMS:** enabled (Rust kms-frost, FROST keygen/sign/reshare)
+- **Barretenberg:** installed on each node for ZK proof verification
+- **Factory:** `0xB4c55139db4ad9c481DAA82B249F934CBbB73b91`
+- **Group:** `0xf75bfc536ecf70006361685f1ed0b005ea08b773`
 
 ## Prerequisites
 
-- AWS CLI configured with credentials that can launch EC2 instances
-- Ansible 2.14+ with `amazon.aws` collection
-- Python boto3
-- Foundry (forge, cast)
+- AWS CLI configured (`aws sso login`)
+- Ansible 2.14+ with `amazon.aws` collection (`ansible-galaxy collection install amazon.aws`)
+- Python boto3 (`pip3 install boto3`)
+- Foundry (`forge`, `cast`)
 - Go 1.22+
 - jq
-- An SSH key pair named `signet-testnet` created in each target region
-- A funded Sepolia deployer key
-- An Alchemy (or similar) Sepolia RPC URL
+- SSH key pair `signet-testnet` in us-east-1
+- Funded Sepolia deployer key
+- Sepolia RPC URL (Alchemy / Infura)
 
-### macOS install steps
-
-```bash
-# Homebrew (if not already installed)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# AWS CLI
-brew install awscli
-aws configure  # enter your access key, secret, default region
-
-# Python + Ansible + boto3
-brew install python
-pip3 install ansible boto3
-ansible-galaxy collection install amazon.aws
-
-# Foundry (forge, cast, anvil)
-curl -L https://foundry.paradigm.xyz | bash
-foundryup
-
-# Go
-brew install go
-
-# jq
-brew install jq
-
-# SSH key pair — create in each target region
-aws ec2 create-key-pair --key-name signet-testnet --region us-east-1 \
-  --query 'KeyMaterial' --output text > ~/.ssh/signet-testnet.pem
-chmod 600 ~/.ssh/signet-testnet.pem
-# Repeat for us-east-2, us-west-1, us-west-2, ca-central-1:
-for region in us-east-2 us-west-1 us-west-2 ca-central-1; do
-  aws ec2 import-key-pair --key-name signet-testnet --region $region \
-    --public-key-material fileb://<(ssh-keygen -y -f ~/.ssh/signet-testnet.pem)
-done
-```
-
-## Setup Flow
+## Full deploy from scratch
 
 ### 1. Generate node identities
 
@@ -73,99 +39,99 @@ done
 testnet/scripts/init-nodes.sh
 ```
 
-Creates key material under `testnet/data/node{1..5}/` and writes
-Ansible host_vars with peer IDs and Ethereum addresses.
+Creates `testnet/data/node{1..3}/` with key material and writes Ansible
+`host_vars/node{1..3}.yml`.
 
 ### 2. Provision EC2 instances
 
 ```bash
 cd testnet/ansible
-ansible-playbook provision.yml -e ssh_key_name=signet-testnet
+ansible-playbook provision-single-region.yml -e ssh_key_name=signet-testnet
 ```
 
-Launches 5 t3.medium instances. Writes public IPs to `testnet/.hosts`.
-Update `inventory.yml` with the IPs (or the deploy playbook reads `.hosts`).
+Launches 3 instances across AZs in us-east-1. Creates security group,
+writes IPs to `testnet/.hosts`, and updates `inventory.yml`.
 
 ### 3. Deploy contracts to Sepolia
 
 ```bash
-SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY \
-DEPLOYER_PK=0xYOUR_PRIVATE_KEY \
+SEPOLIA_RPC_URL=https://... \
+DEPLOYER_PK=0x... \
 testnet/scripts/deploy-contracts.sh
 ```
 
-Deploys SignetFactory, registers all 5 nodes, creates a 3-of-5 group.
-Writes `testnet/.env` with all addresses and node metadata.
+Deploys SignetFactory, registers all 3 nodes, creates a 2-of-3 group
+with Google OAuth as a trusted issuer. Writes `testnet/.env`.
 
-### 4. Cross-compile and deploy nodes
+### 4. Cross-compile and deploy
 
 ```bash
-# Build linux binary
+# signetd
 GOOS=linux GOARCH=amd64 go build -o build/signetd-linux-amd64 ./cmd/signetd
 
-# Deploy to all nodes
+# kms-frost (requires cross toolchain or Docker)
+# Pre-built binary: build/kms-frost-linux-amd64
+
+# Deploy everything: signetd + kms-frost + bb (Barretenberg)
 cd testnet/ansible
-FACTORY_ADDRESS=0x... \
-SEPOLIA_RPC_URL=https://... \
+FACTORY_ADDRESS=0x... SEPOLIA_RPC_URL=https://... \
 ansible-playbook deploy.yml
 ```
 
-Uploads the binary, writes config, installs systemd unit, starts signetd.
+The deploy playbook installs:
+- `signetd` binary + config + systemd unit
+- `kms-frost` binary + systemd unit (started before signetd)
+- `bb` (Barretenberg) for ZK proof verification
 
 ### 5. Verify
 
 ```bash
-# Build harness
-go build -o build/harness ./cmd/harness
-
-# Smoke test
-./build/harness -env testnet/.env correctness
+ansible-playbook manage.yml -e action=status
 ```
+
+All 3 nodes should show `active (running)` for both `signetd` and
+`kms-frost` services.
 
 ## Management
 
-All management via Ansible from `testnet/ansible/`:
+From `testnet/ansible/`:
 
 ```bash
-# Check status
+# Status (signetd + kms-frost)
 ansible-playbook manage.yml -e action=status
 
-# View recent logs (default 50 lines)
+# Logs
 ansible-playbook manage.yml -e action=logs
 ansible-playbook manage.yml -e action=logs -e log_lines=200
+ansible-playbook manage.yml -e action=logs-kms
 
 # Stop / start / restart
 ansible-playbook manage.yml -e action=stop
 ansible-playbook manage.yml -e action=start
 ansible-playbook manage.yml -e action=restart
 
-# Wipe node data (stops node, removes data dir, recreates empty)
+# Wipe data (stops services, removes data dirs)
 ansible-playbook manage.yml -e action=clean
+
+# Target single node
+ansible-playbook manage.yml -e action=logs -l node2
 ```
 
-Target a single node: `ansible-playbook manage.yml -e action=logs -l node3`
-
-## Stress Testing
+## Testing
 
 ```bash
-# Performance — 10 concurrent workers, 5 min
-./build/harness -env testnet/.env perf -concurrency 10 -duration 300s -pool 100 -out results.jsonl
+# Build harness
+go build -o build/harness ./cmd/harness
 
-# Scalability — sweep concurrency 5 → 50
+# Correctness smoke test
+./build/harness -env testnet/.env correctness
+
+# Performance — 10 concurrent, 5 min
+./build/harness -env testnet/.env perf -concurrency 10 -duration 300s -pool 100
+
+# Scalability sweep
 ./build/harness -env testnet/.env scale -max-concurrency 50 -step 5 -duration 60s -pool 50
-
-# Bulk keygen — use perf mode with high concurrency and long duration
-./build/harness -env testnet/.env perf -concurrency 50 -duration 3600s -pool 0
 ```
-
-### Reshare testing
-
-After generating keys, test membership change + reshare:
-
-1. Remove a node on-chain (via cast or a script)
-2. Observe reshare auto-trigger in node logs
-3. Re-run harness to verify signing still works
-4. Add a new node on-chain, verify reshare includes it
 
 ## Teardown
 
@@ -174,37 +140,35 @@ cd testnet/ansible
 ansible-playbook teardown.yml
 ```
 
-Terminates all EC2 instances. Contracts on Sepolia are permanent.
+Terminates EC2 instances. Contracts on Sepolia persist.
 
-## Directory Structure
+## Directory structure
 
 ```
 testnet/
   README.md
-  .env                          # generated: node APIs, contract addresses
-  .hosts                        # generated: node IPs from provisioning
-  data/                         # generated: node keys and identities
-    nodes.json
-    node{1..5}/node.key
+  ADDING-A-NODE.md                # guide for external node operators
+  .env                            # generated: contract addresses, node APIs
+  .hosts                          # generated: node IPs from provisioning
+  data/
+    nodes.json                    # all node identities
+    node{1..3}/node.key           # per-node identity keys
   scripts/
-    init-nodes.sh               # generate node identities
-    deploy-contracts.sh         # deploy to Sepolia + register + create group
+    init-nodes.sh                 # generate node identities
+    deploy-contracts.sh           # deploy to Sepolia, register, create group
   ansible/
-    ansible.cfg
-    inventory.yml               # node hosts, regions, connection vars
-    provision.yml               # launch EC2 instances
-    deploy.yml                  # upload binary + config, start systemd
-    manage.yml                  # stop/start/restart/status/logs/clean
-    teardown.yml                # terminate EC2 instances
+    inventory.yml                 # node hosts, IPs, connection vars
+    provision-single-region.yml   # launch EC2 in us-east-1 (multi-AZ)
+    provision.yml                 # launch EC2 across 5 regions (alternative)
+    deploy.yml                    # upload binaries + config, start services
+    manage.yml                    # stop/start/restart/status/logs/clean
+    teardown.yml                  # terminate EC2 instances
     group_vars/
-      signet_nodes.yml
+      signet_nodes.yml            # shared settings (log level, KMS paths)
     host_vars/
-      node{1..5}.yml            # generated: peer_id, eth_address, etc.
+      node{1..3}.yml              # generated: peer_id, eth_address, etc.
     roles/
-      signetd/
-        tasks/main.yml
-        templates/
-          config.yaml.j2
-          signetd.service.j2
-        handlers/main.yml
+      signetd/                    # signetd binary + config + systemd
+      kms-frost/                  # kms-frost binary + systemd
+      bb/                         # Barretenberg install (ZK verify)
 ```
