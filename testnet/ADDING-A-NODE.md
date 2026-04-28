@@ -6,18 +6,43 @@ be added to signing groups.
 
 ## What you need
 
-- A Linux server (Ubuntu 24.04 LTS, t3.medium or equivalent)
-- Public IP with ports **9000** (libp2p) and **8080** (HTTP API) open
+- A Linux server (Ubuntu 24.04 LTS, 2 vCPU / 4 GB minimum)
+  - AWS: t3.medium
+  - GCP: e2-medium
+  - Any VPS with a public IP works
+- Ports **9000** (libp2p) and **8080** (HTTP API) open
 - SSH access from your local machine
 - Sepolia ETH (~0.01) for the node registration transaction
 - The testnet factory address: `0xB4c55139db4ad9c481DAA82B249F934CBbB73b91`
 
 ## Overview
 
-1. Generate a node identity
-2. Register the node on-chain
-3. Add the node to the Ansible inventory
-4. Deploy with Ansible
+1. Provision a server (or use an existing one)
+2. Generate a node identity
+3. Register the node on-chain
+4. Add the node to the Ansible inventory
+5. Deploy with Ansible
+
+## Step 0: Provision a server (optional)
+
+If you don't already have a server, use one of the provisioning playbooks:
+
+**AWS:**
+```bash
+cd testnet/ansible
+ansible-playbook provision-single-region.yml -e ssh_key_name=signet-testnet
+```
+
+**GCP:**
+```bash
+cd testnet/ansible
+ansible-playbook provision-gcp.yml \
+  -e gcp_project=your-project-id \
+  -e node_name=node4
+```
+
+Both create an Ubuntu 24.04 instance with the right firewall rules and
+add it to the inventory. Skip to Step 2 if using these.
 
 ## Step 1: Generate a node identity
 

@@ -1,0 +1,135 @@
+---
+# provision-gcp.yml — Launch a single Signet node on GCP.
+#
+# For external operators joining the testnet. Provisions one e2-medium
+# instance with firewall rules for SSH, libp2p, and the HTTP API.
+#
+# Prerequisites:
+#   - gcloud CLI installed and authenticated:
+#       gcloud auth application-default login
+#   - google.cloud Ansible collection:
+#       ansible-galaxy collection install google.cloud
+#   - Python google-auth:
+#       pip3 install google-auth requests
+#
+# Usage:
+#   ansible-playbook provision-gcp.yml \
+#     -e gcp_project=your-gcp-project-id \
+#     -e node_name=node4
+#
+# After provisioning:
+#   1. Generate node identity:  ./build/devnet-init testnet/data/<node_name>
+#   2. Add host_vars:           testnet/ansible/host_vars/<node_name>.yml
+#   3. Register on-chain:       see testnet/ADDING-A-NODE.md
+#   4. Deploy:                  ansible-playbook deploy.yml -l <node_name>
+
+- name: Provision Signet node on GCP
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    gcp_project: ""           # required: -e gcp_project=your-project
+    node_name: node4          # override with -e node_name=...
+    zone: us-east1-b
+    machine_type: e2-medium   # 2 vCPU, 4 GB — comparable to AWS t3.medium
+    disk_size_gb: 20
+    image_family: ubuntu-2404-lts-amd64
+    image_project: ubuntu-os-cloud
+    network: default
+    ssh_user: ubuntu
+    ssh_public_key_file: ~/.ssh/signet-testnet-gcp.pub
+    auth_kind: application     # uses gcloud auth application-default credentials
+
+  tasks:
+    - name: Validate gcp_project is set
+      assert:
+        that: gcp_project != ""
+        fail_msg: "gcp_project is required: -e gcp_project=your-project-id"
+
+    - name: Ensure firewall rule for signet ports
+      google.cloud.gcp_compute_firewall:
+        name: signet-testnet-allow
+        project: "{{ gcp_project }}"
+        auth_kind: "{{ auth_kind }}"
+        network:
+          selfLink: "global/networks/{{ network }}"
+        allowed:
+          - ip_protocol: tcp
+            ports:
+              - "22"    # SSH
+              - "9000"  # libp2p
+              - "8080"  # HTTP API
+        source_ranges:
+          - "0.0.0.0/0"
+        target_tags:
+          - signet-node
+        state: present
+
+    - name: Create instance
+      google.cloud.gcp_compute_instance:
+        name: "{{ node_name }}"
+        project: "{{ gcp_project }}"
+        auth_kind: "{{ auth_kind }}"
+        zone: "{{ zone }}"
+        machine_type: "{{ machine_type }}"
+        disks:
+          - auto_delete: true
+            boot: true
+            initialize_params:
+              source_image: "projects/{{ image_project }}/global/images/family/{{ image_family }}"
+              disk_size_gb: "{{ disk_size_gb }}"
+              disk_type: pd-balanced
+        network_interfaces:
+          - network:
+              selfLink: "global/networks/{{ network }}"
+            access_configs:
+              - name: External NAT
+                type: ONE_TO_ONE_NAT
+        tags:
+          items:
+            - signet-node
+        labels:
+          project: signet-testnet
+          node: "{{ node_name }}"
+        metadata:
+          ssh-keys: "{{ ssh_user }}:{{ lookup('file', ssh_public_key_file) }}"
+        state: present
+      register: gcp_instance
+
+    - name: Display instance IP
+      debug:
+        msg: "{{ node_name }}: {{ gcp_instance.networkInterfaces[0].accessConfigs[0].natIP }}"
+
+    - name: Write IP to .hosts file (append)
+      lineinfile:
+        path: "{{ playbook_dir }}/../.hosts"
+        line: "{{ node_name }}={{ gcp_instance.networkInterfaces[0].accessConfigs[0].natIP }}"
+        create: true
+
+    - name: Add to inventory.yml
+      blockinfile:
+        path: "{{ playbook_dir }}/inventory.yml"
+        marker: "# {mark} {{ node_name }} (GCP)"
+        insertafter: "signet_nodes:"
+        block: |2
+                  {{ node_name }}:
+                    ansible_host: {{ gcp_instance.networkInterfaces[0].accessConfigs[0].natIP }}
+                    cloud: gcp
+                    node_index: {{ node_name | regex_replace('[^0-9]', '') }}
+
+    - name: Wait for SSH
+      wait_for:
+        host: "{{ gcp_instance.networkInterfaces[0].accessConfigs[0].natIP }}"
+        port: 22
+        timeout: 120
+        state: started
+
+    - name: Done
+      debug:
+        msg: >
+          Instance ready. Next steps:
+          1. Generate identity: ./build/devnet-init testnet/data/{{ node_name }}
+          2. Create host_vars:  testnet/ansible/host_vars/{{ node_name }}.yml
+          3. Register on-chain: see testnet/ADDING-A-NODE.md
+          4. Deploy:            FACTORY_ADDRESS=0x... SEPOLIA_RPC_URL=https://... ansible-playbook deploy.yml -l {{ node_name }}
