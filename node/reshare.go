@@ -72,6 +72,12 @@ func (n *Node) initReshareState(store *ReshareStore) {
 			zap.String("group_id", gid),
 			zap.Int("keys_total", len(job.KeysTotal)),
 			zap.Int("keys_done", done))
+
+		// Auto-resume coordinator for pending jobs on startup.
+		if err := n.startCoordinator(gid, 1); err != nil {
+			n.log.Debug("reshare: could not auto-resume coordinator",
+				zap.String("group_id", gid), zap.Error(err))
+		}
 	}
 }
 

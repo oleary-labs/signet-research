@@ -297,31 +297,50 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		}()
 
 	case msgReshare:
-		// Reshare is administrative — no auth validation required.
-		// Validate that this node knows about the reshare job.
+		// Peer authorization: verify the sender is a current member of the
+		// group. Only active group members may initiate reshare.
+		senderPeerID := tss.PartyID(s.Conn().RemotePeer().String())
+		n.groupsMu.RLock()
+		grpInfo := n.groups[msg.GroupID]
+		n.groupsMu.RUnlock()
+		if grpInfo == nil {
+			n.log.Warn("coord: reshare rejected, unknown group",
+				zap.String("group_id", msg.GroupID))
+			s.Write([]byte{coordNACK})
+			return
+		}
+		senderIsMember := false
+		for _, m := range grpInfo.Members {
+			if m == senderPeerID {
+				senderIsMember = true
+				break
+			}
+		}
+		if !senderIsMember {
+			n.log.Warn("coord: reshare rejected, sender not in group",
+				zap.String("group_id", msg.GroupID),
+				zap.String("sender", string(senderPeerID)))
+			s.Write([]byte{coordNACK})
+			return
+		}
+
 		if n.reshareStore == nil {
 			n.log.Warn("coord: reshare rejected, reshare store not initialized")
 			s.Write([]byte{coordNACK})
 			return
 		}
 
+		// Only accept if this node has independently observed the need for a
+		// reshare (via chain events or admin API). Don't auto-create jobs from
+		// untrusted coord messages — the node's own chain poller creates jobs
+		// when it sees membership change events.
 		job, err := n.reshareStore.GetJob(msg.GroupID)
 		if err != nil || job == nil {
-			// No job exists — auto-create for API-triggered refresh.
-			if err := n.createReshareJob(msg.GroupID, "refresh", msg.OldParties, msg.NewParties, msg.Threshold); err != nil {
-				n.log.Warn("coord: reshare rejected, could not create job",
-					zap.String("group_id", msg.GroupID),
-					zap.Error(err))
-				s.Write([]byte{coordNACK})
-				return
-			}
-			job, _ = n.reshareStore.GetJob(msg.GroupID)
-			if job == nil {
-				n.log.Warn("coord: reshare rejected, job creation returned nil",
-					zap.String("group_id", msg.GroupID))
-				s.Write([]byte{coordNACK})
-				return
-			}
+			n.log.Warn("coord: reshare rejected, no local job (waiting for chain event)",
+				zap.String("group_id", msg.GroupID),
+				zap.String("sender", string(senderPeerID)))
+			s.Write([]byte{coordNACK})
+			return
 		}
 
 		// Check if this key is already done for this job. If so, a previous
