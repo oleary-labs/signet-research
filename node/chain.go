@@ -36,7 +36,8 @@ const (
 		{"name":"IssuerAdded","type":"event","inputs":[{"name":"h","type":"bytes32","indexed":true},{"name":"issuer","type":"string","indexed":false},{"name":"clientIds","type":"string[]","indexed":false}],"anonymous":false},
 		{"name":"IssuerRemoved","type":"event","inputs":[{"name":"h","type":"bytes32","indexed":true},{"name":"issuer","type":"string","indexed":false}],"anonymous":false},
 		{"name":"AuthKeyAdded","type":"event","inputs":[{"name":"keyHash","type":"bytes32","indexed":true},{"name":"pubkey","type":"bytes","indexed":false}],"anonymous":false},
-		{"name":"AuthKeyRemoved","type":"event","inputs":[{"name":"keyHash","type":"bytes32","indexed":true},{"name":"pubkey","type":"bytes","indexed":false}],"anonymous":false}
+		{"name":"AuthKeyRemoved","type":"event","inputs":[{"name":"keyHash","type":"bytes32","indexed":true},{"name":"pubkey","type":"bytes","indexed":false}],"anonymous":false},
+		{"name":"ReshareRequested","type":"event","inputs":[{"name":"requestedBy","type":"address","indexed":true}],"anonymous":false}
 	]`
 
 	defaultPollInterval = 12 * time.Second
@@ -335,12 +336,13 @@ func (c *ChainClient) pollGroupEvents(ctx context.Context, grpAddr common.Addres
 	issuerRemovedID := c.grpABI.Events["IssuerRemoved"].ID
 	authKeyAddedID := c.grpABI.Events["AuthKeyAdded"].ID
 	authKeyRemovedID := c.grpABI.Events["AuthKeyRemoved"].ID
+	reshareRequestedID := c.grpABI.Events["ReshareRequested"].ID
 
 	query := ethereum.FilterQuery{
 		FromBlock: new(big.Int).SetUint64(from),
 		ToBlock:   new(big.Int).SetUint64(to),
 		Addresses: []common.Address{grpAddr},
-		Topics:    [][]common.Hash{{joinedID, removedID, issuerAddedID, issuerRemovedID, authKeyAddedID, authKeyRemovedID}},
+		Topics:    [][]common.Hash{{joinedID, removedID, issuerAddedID, issuerRemovedID, authKeyAddedID, authKeyRemovedID, reshareRequestedID}},
 	}
 	logs, err := c.eth.FilterLogs(ctx, query)
 	if err != nil {
@@ -410,15 +412,21 @@ func (c *ChainClient) pollGroupEvents(ctx context.Context, grpAddr common.Addres
 						zap.String("event", eventType))
 				}
 			} else {
-				// Group is ACTIVE: create reshare job and auto-start coordinator.
+				// Group is ACTIVE: create reshare job. Only the elected
+				// leader starts the coordinator to avoid races.
 				if err := c.n.createReshareJob(hexGrp, eventType, oldMembers, newMembers, threshold); err != nil {
 					c.log.Warn("chain: create reshare job",
 						zap.String("group", hexGrp), zap.Error(err))
-				} else if err := c.n.startCoordinator(hexGrp, 1); err != nil {
-					// Non-fatal: another node may coordinate, or on-demand
-					// reshare will handle it when a sign request arrives.
-					c.log.Debug("chain: auto-start coordinator",
-						zap.String("group", hexGrp), zap.Error(err))
+				} else if c.n.isReshareLeader(hexGrp) {
+					if err := c.n.startCoordinator(hexGrp, 1); err != nil {
+						c.log.Debug("chain: start coordinator",
+							zap.String("group", hexGrp), zap.Error(err))
+					}
+				} else {
+					leader, _ := c.n.reshareLeader(hexGrp)
+					c.log.Info("chain: not reshare leader, waiting",
+						zap.String("group", hexGrp),
+						zap.String("leader", string(leader)))
 				}
 			}
 
@@ -475,6 +483,40 @@ func (c *ChainClient) pollGroupEvents(ctx context.Context, grpAddr common.Addres
 			h := [32]byte(lg.Topics[1])
 			c.n.auth.RemoveAuthKey(hexGrp, h)
 			c.log.Info("chain: auth key removed", zap.String("group", hexGrp))
+
+		case reshareRequestedID:
+			// Manual reshare request from the group manager.
+			// Same-committee refresh: old and new members are identical.
+			c.n.groupsMu.RLock()
+			grp := c.n.groups[hexGrp]
+			c.n.groupsMu.RUnlock()
+			if grp == nil {
+				continue
+			}
+			members := grp.Members
+			threshold := grp.Threshold
+
+			c.log.Info("chain: reshare requested",
+				zap.String("group", hexGrp),
+				zap.Int("members", len(members)))
+
+			oldMembers := make([]tss.PartyID, len(members))
+			copy(oldMembers, members)
+
+			if err := c.n.createReshareJob(hexGrp, "refresh", oldMembers, oldMembers, threshold); err != nil {
+				c.log.Warn("chain: create reshare job for refresh",
+					zap.String("group", hexGrp), zap.Error(err))
+			} else if c.n.isReshareLeader(hexGrp) {
+				if err := c.n.startCoordinator(hexGrp, 1); err != nil {
+					c.log.Debug("chain: start coordinator for refresh",
+						zap.String("group", hexGrp), zap.Error(err))
+				}
+			} else {
+				leader, _ := c.n.reshareLeader(hexGrp)
+				c.log.Info("chain: not reshare leader for refresh, waiting",
+					zap.String("group", hexGrp),
+					zap.String("leader", string(leader)))
+			}
 		}
 	}
 	return nil

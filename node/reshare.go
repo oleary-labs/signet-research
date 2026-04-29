@@ -18,6 +18,40 @@ type reshareKeyID struct {
 	KeyID   string
 }
 
+// reshareLeader returns the peer ID of the designated reshare coordinator for
+// a group. The leader is the lexicographically smallest member in the current
+// active membership. This is deterministic: all nodes compute the same leader
+// from the same on-chain state, survives restarts, and requires no communication.
+//
+// Returns ("", false) if the group is unknown or has no members.
+func (n *Node) reshareLeader(groupID string) (tss.PartyID, bool) {
+	n.groupsMu.RLock()
+	grp := n.groups[groupID]
+	n.groupsMu.RUnlock()
+	if grp == nil || len(grp.Members) == 0 {
+		return "", false
+	}
+	// Members is already sorted (populated from chain client).
+	return grp.Members[0], true
+}
+
+// isReshareLeader returns true if this node is the designated reshare
+// coordinator for the given group.
+func (n *Node) isReshareLeader(groupID string) bool {
+	leader, ok := n.reshareLeader(groupID)
+	if !ok {
+		return false
+	}
+	return leader == tss.PartyID(n.host.Self())
+}
+
+// TODO: If the elected leader is down or unresponsive, the reshare will
+// not proceed automatically. Currently this requires manual intervention
+// (e.g. admin API /admin/reshare) or the on-demand reshare path which is
+// triggered when a sign request hits a stale key. A future enhancement
+// could add a timeout-based fallback where the next node in sort order
+// takes over if the leader hasn't started coordination within N seconds.
+
 // reshareState holds all reshare-related fields on the Node struct.
 // These are embedded directly into Node in initReshareState.
 //
@@ -73,10 +107,18 @@ func (n *Node) initReshareState(store *ReshareStore) {
 			zap.Int("keys_total", len(job.KeysTotal)),
 			zap.Int("keys_done", done))
 
-		// Auto-resume coordinator for pending jobs on startup.
-		if err := n.startCoordinator(gid, 1); err != nil {
-			n.log.Debug("reshare: could not auto-resume coordinator",
-				zap.String("group_id", gid), zap.Error(err))
+		// Auto-resume coordinator for pending jobs on startup, but only
+		// if this node is the elected leader for the group.
+		if n.isReshareLeader(gid) {
+			if err := n.startCoordinator(gid, 1); err != nil {
+				n.log.Debug("reshare: could not auto-resume coordinator",
+					zap.String("group_id", gid), zap.Error(err))
+			}
+		} else {
+			leader, _ := n.reshareLeader(gid)
+			n.log.Info("reshare: not leader, waiting for coordinator",
+				zap.String("group_id", gid),
+				zap.String("leader", string(leader)))
 		}
 	}
 }

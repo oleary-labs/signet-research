@@ -262,6 +262,16 @@ contract SignetGroup is Initializable, ISignetGroup {
     }
 
     // -------------------------------------------------------------------------
+    // Reshare
+    // -------------------------------------------------------------------------
+
+    /// @inheritdoc ISignetGroup
+    function requestReshare() external onlyManager {
+        require(_activeNodes.length >= threshold, "not enough active nodes");
+        emit ReshareRequested(msg.sender);
+    }
+
+    // -------------------------------------------------------------------------
     // Views — membership
     // -------------------------------------------------------------------------
 

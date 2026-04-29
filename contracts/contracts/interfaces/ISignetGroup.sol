@@ -53,6 +53,15 @@ interface ISignetGroup {
     event AuthKeyRemoved (bytes32 indexed keyHash, bytes pubkey);
 
     // -------------------------------------------------------------------------
+    // Events — reshare
+    // -------------------------------------------------------------------------
+
+    /// @notice Emitted when a manual key refresh (reshare) is requested.
+    ///         Nodes watch for this event and trigger a reshare with the current
+    ///         active membership (same committee, refreshed key shares).
+    event ReshareRequested(address indexed requestedBy);
+
+    // -------------------------------------------------------------------------
     // Initializer
     // -------------------------------------------------------------------------
 
@@ -113,6 +122,15 @@ interface ISignetGroup {
 
     /// @notice Remove an authorization key (manager only).
     function removeAuthKey(bytes32 keyHash) external;
+
+    // -------------------------------------------------------------------------
+    // Reshare (manager-only)
+    // -------------------------------------------------------------------------
+
+    /// @notice Request a manual key refresh (reshare) with the current committee.
+    ///         Emits ReshareRequested. Nodes detect the event and coordinate the
+    ///         reshare protocol using leader election.
+    function requestReshare() external;
 
     // -------------------------------------------------------------------------
     // Views — membership

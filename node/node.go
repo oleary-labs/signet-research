@@ -267,7 +267,8 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 	mux.HandleFunc("POST /v1/sign", n.handleSign)
 
 	mux.HandleFunc("POST /admin/keys", n.handleListKeys)
-	mux.HandleFunc("POST /admin/reshare", n.handleStartReshare)
+	// Reshare is triggered via on-chain events (node add/remove or
+	// requestReshare() on the group contract), not via admin API.
 	mux.HandleFunc("POST /admin/reshare/status", n.handleReshareStatus)
 	mux.HandleFunc("GET /debug/stats", n.handleDebugStats)
 	n.server = &http.Server{Addr: cfg.APIAddr, Handler: mux}

@@ -297,23 +297,30 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		}()
 
 	case msgReshare:
-		// Peer authorization: verify the sender is a current member of the
-		// group. Only active group members may initiate reshare.
+		// Peer authorization: verify the sender is a group member AND either
+		// the elected leader or this node independently knows a reshare is
+		// needed (has a local job). This allows the leader-driven path
+		// (event-triggered, prevents races) and the on-demand path (any
+		// member can coordinate when a sign request hits a stale key).
 		senderPeerID := tss.PartyID(s.Conn().RemotePeer().String())
-		n.groupsMu.RLock()
-		grpInfo := n.groups[msg.GroupID]
-		n.groupsMu.RUnlock()
-		if grpInfo == nil {
+		_, leaderKnown := n.reshareLeader(msg.GroupID)
+		if !leaderKnown {
 			n.log.Warn("coord: reshare rejected, unknown group",
 				zap.String("group_id", msg.GroupID))
 			s.Write([]byte{coordNACK})
 			return
 		}
+		// Verify sender is a member of the group (old or new committee).
+		n.groupsMu.RLock()
+		grpInfo := n.groups[msg.GroupID]
+		n.groupsMu.RUnlock()
 		senderIsMember := false
-		for _, m := range grpInfo.Members {
-			if m == senderPeerID {
-				senderIsMember = true
-				break
+		if grpInfo != nil {
+			for _, m := range grpInfo.Members {
+				if m == senderPeerID {
+					senderIsMember = true
+					break
+				}
 			}
 		}
 		if !senderIsMember {
