@@ -115,12 +115,17 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		return
 	}
 
-	// Validate auth if the group has any auth policy configured.
-	if n.auth.HasAuthPolicy(msg.GroupID) {
+	// User-facing operations (keygen, sign) require auth if the group has
+	// an auth policy. Reshare operations are peer-authorized: the receiving
+	// node validates that the sender is a group member and that a local
+	// reshare job exists (checked inside each reshare case below).
+	requiresUserAuth := msg.Type == msgKeygen || msg.Type == msgSign
+	if requiresUserAuth && n.auth.HasAuthPolicy(msg.GroupID) {
 		if msg.Auth == nil {
 			n.log.Warn("coord: missing auth",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
+			s.Write([]byte{coordNACK})
 			return
 		}
 		keyPrefix, err := n.auth.ValidateAuthProof(n.ctx, msg.GroupID, msg.Auth)
@@ -129,6 +134,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID),
 				zap.Error(err))
+			s.Write([]byte{coordNACK})
 			return
 		}
 		// Verify request signature against the logical key_id (strip the
