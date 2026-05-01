@@ -15,6 +15,7 @@ use sha2::Digest;
 use tracing::debug;
 
 use crate::curve::Curve;
+use crate::ecdsa_session::EcdsaSession;
 use crate::params::{KeygenParams, SignParams};
 use crate::reshare::ReshareParams;
 use crate::reshare_session::ReshareSession;
@@ -616,6 +617,7 @@ fn process_typed<C: Ciphersuite>(
 pub enum Session {
     Secp256k1(TypedSession<frost_secp256k1::Secp256K1Sha256>),
     Ed25519(TypedSession<frost_ed25519::Ed25519Sha512>),
+    EcdsaSecp256k1(EcdsaSession),
     ReshareSecp256k1(ReshareSession<frost_secp256k1::Secp256K1Sha256>),
     ReshareEd25519(ReshareSession<frost_ed25519::Ed25519Sha512>),
 }
@@ -625,6 +627,7 @@ impl Session {
         match self {
             Session::Secp256k1(s) => s.state_name(),
             Session::Ed25519(s) => s.state_name(),
+            Session::EcdsaSecp256k1(s) => s.state_name(),
             Session::ReshareSecp256k1(s) => s.state_name(),
             Session::ReshareEd25519(s) => s.state_name(),
         }
@@ -634,6 +637,7 @@ impl Session {
         match self {
             Session::Secp256k1(s) => s.pending_count(),
             Session::Ed25519(s) => s.pending_count(),
+            Session::EcdsaSecp256k1(s) => s.pending_count(),
             Session::ReshareSecp256k1(s) => s.pending_count(),
             Session::ReshareEd25519(s) => s.pending_count(),
         }
@@ -644,7 +648,8 @@ impl Session {
         params: KeygenParams,
     ) -> Result<(Self, StepOutput), String> {
         match params.curve {
-            Curve::Secp256k1 => {
+            Curve::Secp256k1 | Curve::EcdsaSecp256k1 => {
+                // Both FROST Schnorr and ECDSA use the same secp256k1 DKG.
                 let (s, o) = TypedSession::<frost_secp256k1::Secp256K1Sha256>::start_keygen(session_id, params)?;
                 Ok((Session::Secp256k1(s), o))
             }
@@ -669,6 +674,10 @@ impl Session {
                 let (s, o) = TypedSession::<frost_ed25519::Ed25519Sha512>::start_sign(session_id, params, storage)?;
                 Ok((Session::Ed25519(s), o))
             }
+            Curve::EcdsaSecp256k1 => {
+                let (s, o) = EcdsaSession::start(session_id, params, storage)?;
+                Ok((Session::EcdsaSecp256k1(s), o))
+            }
         }
     }
 
@@ -678,7 +687,7 @@ impl Session {
         storage: &Storage,
     ) -> Result<(Self, StepOutput), String> {
         match params.curve {
-            Curve::Secp256k1 => {
+            Curve::Secp256k1 | Curve::EcdsaSecp256k1 => {
                 let (s, o) = ReshareSession::<frost_secp256k1::Secp256K1Sha256>::start(session_id, params, storage)?;
                 Ok((Session::ReshareSecp256k1(s), o))
             }
@@ -699,6 +708,7 @@ impl Session {
         match self {
             Session::Secp256k1(s) => s.process_message(from, to, payload, storage),
             Session::Ed25519(s) => s.process_message(from, to, payload, storage),
+            Session::EcdsaSecp256k1(s) => s.process_message(from, to, payload, storage),
             Session::ReshareSecp256k1(s) => s.process_message(from, to, payload, storage),
             Session::ReshareEd25519(s) => s.process_message(from, to, payload, storage),
         }

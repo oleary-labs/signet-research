@@ -9,6 +9,7 @@ pub mod proto {
 }
 
 mod curve;
+mod ecdsa_session;
 mod params;
 mod reshare;
 mod reshare_session;

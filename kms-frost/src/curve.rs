@@ -1,31 +1,52 @@
-//! Curve identifier shared across KMS modules.
+//! Signing scheme identifier shared across KMS modules.
+//!
+//! `Curve` identifies the signing scheme (not just the curve) for keygen,
+//! sign, and storage. `Secp256k1` and `Ed25519` use FROST Schnorr.
+//! `EcdsaSecp256k1` uses threshold ECDSA (DJNPO20) over secp256k1,
+//! producing standard ECDSA signatures compatible with EVM ecrecover.
 
 use serde::{Deserialize, Serialize};
 
-/// Supported FROST ciphersuites.
+/// Supported signing schemes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Curve {
+    /// FROST Schnorr over secp256k1.
     Secp256k1,
+    /// FROST Schnorr over Ed25519.
     Ed25519,
+    /// Threshold ECDSA over secp256k1 (DJNPO20 robust protocol).
+    /// Produces standard ECDSA signatures (r, s, v) compatible with ecrecover.
+    /// Uses the same DKG/reshare as Secp256k1 (FROST keygen), but a different
+    /// 4-round signing protocol.
+    EcdsaSecp256k1,
 }
 
 impl Curve {
-    /// Wire name used in CBOR params.
+    /// Wire name used in CBOR params and API requests.
     pub fn as_str(&self) -> &'static str {
         match self {
             Curve::Secp256k1 => "secp256k1",
             Curve::Ed25519 => "ed25519",
+            Curve::EcdsaSecp256k1 => "ecdsa_secp256k1",
         }
     }
 
     /// Single-byte prefix for storage keys. Ensures same key_id with
-    /// different curves maps to different storage entries.
+    /// different schemes maps to different storage entries.
     pub fn storage_prefix(&self) -> u8 {
         match self {
             Curve::Secp256k1 => 0x01,
             Curve::Ed25519 => 0x02,
+            Curve::EcdsaSecp256k1 => 0x03,
         }
+    }
+
+    /// Whether this scheme uses secp256k1 keygen (FROST DKG).
+    /// Both Secp256k1 (FROST Schnorr) and EcdsaSecp256k1 share the same
+    /// keygen — only the signing protocol differs.
+    pub fn uses_secp256k1_keygen(&self) -> bool {
+        matches!(self, Curve::Secp256k1 | Curve::EcdsaSecp256k1)
     }
 }
 
