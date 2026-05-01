@@ -460,9 +460,8 @@ fn process_typed<C: Ciphersuite>(
                     verifying_share: verifying_share.clone(),
                     generation: 0,
                 };
-                let curve = Curve::from_ciphersuite::<C>();
                 try_invalid!(
-                    storage.put_key(&params.group_id, &params.key_id, &curve, &stored),
+                    storage.put_key(&params.group_id, &params.key_id, &params.curve, &stored),
                     TypedState::Completed
                 );
 
@@ -1129,5 +1128,104 @@ mod tests {
         let message = b"cold storage signing test!!!!!!!";
         let (sig_r, sig_z) = run_sign(&["peer-B", "peer-C"], message, &mut owned);
         verify_signature_secp256k1(&group_key, message, &sig_r, &sig_z);
+    }
+
+    // ===================================================================
+    // Threshold ECDSA tests
+    // ===================================================================
+
+    fn run_ecdsa_keygen(
+        owned: &mut HashMap<String, (Storage, tempfile::TempDir)>,
+    ) -> Vec<u8> {
+        run_keygen_with_curve(Curve::EcdsaSecp256k1, owned)
+    }
+
+    fn run_ecdsa_sign(
+        signers: &[&str],
+        message: &[u8],
+        owned: &mut HashMap<String, (Storage, tempfile::TempDir)>,
+    ) -> (Vec<u8>, Vec<u8>) {
+        let signer_ids: Vec<String> = signers.iter().map(|s| s.to_string()).collect();
+        let mut sessions: HashMap<String, (Session, Storage)> = HashMap::new();
+        let mut initial_messages = Vec::new();
+
+        for pid in signers {
+            let params = SignParams {
+                group_id: GROUP_ID.to_string(),
+                key_id: KEY_ID.to_string(),
+                party_id: pid.to_string(),
+                signer_ids: signer_ids.clone(),
+                message: message.to_vec(),
+                curve: Curve::EcdsaSecp256k1,
+            };
+            let (storage, _) = owned.remove(*pid).unwrap();
+            let (session, output) =
+                Session::start_sign(&format!("ecdsa-sign-{pid}"), params, &storage)
+                    .expect("start_sign ecdsa");
+            initial_messages.extend(output.messages);
+            sessions.insert(pid.to_string(), (session, storage));
+        }
+
+        let results = route(initial_messages, &mut sessions);
+        // Only the coordinator produces a result with signature.
+        let sig_results: Vec<&SessionResult> = results.iter()
+            .filter(|r| r.signature_r.is_some())
+            .collect();
+        assert!(!sig_results.is_empty(), "no signature result from coordinator");
+
+        let r = sig_results[0].signature_r.as_ref().unwrap().clone();
+        let s = sig_results[0].signature_z.as_ref().unwrap().clone();
+
+        for (pid, (_, storage)) in sessions {
+            let dir = tempfile::tempdir().unwrap();
+            owned.insert(pid, (storage, dir));
+        }
+
+        (r, s)
+    }
+
+    fn verify_ecdsa_signature(group_key: &[u8], msg_hash: &[u8], sig_r: &[u8], sig_s: &[u8]) {
+        use k256::ecdsa::signature::hazmat::PrehashVerifier;
+        let r_bytes: [u8; 32] = sig_r.try_into().expect("r must be 32 bytes");
+        let s_bytes: [u8; 32] = sig_s.try_into().expect("s must be 32 bytes");
+        let sig = k256::ecdsa::Signature::from_scalars(r_bytes, s_bytes)
+            .expect("invalid signature scalars");
+        let pk = k256::PublicKey::from_sec1_bytes(group_key)
+            .expect("invalid group key");
+        let vk = k256::ecdsa::VerifyingKey::from(&pk);
+        vk.verify_prehash(msg_hash, &sig)
+            .expect("ECDSA signature verification failed");
+    }
+
+    #[test]
+    fn test_ecdsa_keygen_and_sign_3_of_3() {
+        init_tracing();
+        let mut owned = make_storages(&PARTIES);
+        let group_key = run_ecdsa_keygen(&mut owned);
+        assert_eq!(group_key.len(), 33, "secp256k1 compressed key");
+
+        let msg_hash = sha2::Sha256::digest(b"ecdsa threshold test message");
+        let (sig_r, sig_s) = run_ecdsa_sign(&PARTIES, &msg_hash, &mut owned);
+
+        assert_eq!(sig_r.len(), 32);
+        assert_eq!(sig_s.len(), 32);
+
+        verify_ecdsa_signature(&group_key, &msg_hash, &sig_r, &sig_s);
+        println!("ECDSA 3-of-3 keygen + sign + verify: OK");
+    }
+
+    #[test]
+    fn test_ecdsa_multiple_signs() {
+        init_tracing();
+        let mut owned = make_storages(&PARTIES);
+        let group_key = run_ecdsa_keygen(&mut owned);
+
+        for i in 0..5 {
+            let msg = format!("ecdsa message {i}");
+            let msg_hash = sha2::Sha256::digest(msg.as_bytes());
+            let (sig_r, sig_s) = run_ecdsa_sign(&PARTIES, &msg_hash, &mut owned);
+            verify_ecdsa_signature(&group_key, &msg_hash, &sig_r, &sig_s);
+        }
+        println!("ECDSA 5 sequential signs: OK");
     }
 }
