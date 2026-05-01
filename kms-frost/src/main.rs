@@ -12,6 +12,7 @@ mod curve;
 mod params;
 mod reshare;
 mod reshare_session;
+mod robust_ecdsa_spike;
 mod service;
 mod session;
 mod storage;
