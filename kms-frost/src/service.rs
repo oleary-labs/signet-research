@@ -31,6 +31,7 @@ fn parse_curve(s: &str) -> Result<Curve, Status> {
     match s {
         "" | "secp256k1" => Ok(Curve::Secp256k1),
         "ed25519" => Ok(Curve::Ed25519),
+        "ecdsa_secp256k1" => Ok(Curve::EcdsaSecp256k1),
         _ => Err(Status::invalid_argument(format!("unknown curve: {s}"))),
     }
 }
