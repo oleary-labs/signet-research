@@ -118,12 +118,17 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		return
 	}
 
-	// Validate auth if the group has any auth policy configured.
-	if n.auth.HasAuthPolicy(msg.GroupID) {
+	// User-facing operations (keygen, sign) require auth if the group has
+	// an auth policy. Reshare operations are peer-authorized: the receiving
+	// node validates that the sender is a group member and that a local
+	// reshare job exists (checked inside each reshare case below).
+	requiresUserAuth := msg.Type == msgKeygen || msg.Type == msgSign
+	if requiresUserAuth && n.auth.HasAuthPolicy(msg.GroupID) {
 		if msg.Auth == nil {
 			n.log.Warn("coord: missing auth",
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID))
+			s.Write([]byte{coordNACK})
 			return
 		}
 		keyPrefix, err := n.auth.ValidateAuthProof(n.ctx, msg.GroupID, msg.Auth)
@@ -132,6 +137,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				zap.String("group_id", msg.GroupID),
 				zap.String("key_id", msg.KeyID),
 				zap.Error(err))
+			s.Write([]byte{coordNACK})
 			return
 		}
 		// Verify request signature against the logical key_id (strip the
@@ -314,31 +320,57 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 		if msgCurve == "" {
 			msgCurve = CurveSecp256k1
 		}
-		// Reshare is administrative — no auth validation required.
-		// Validate that this node knows about the reshare job.
+		// Peer authorization: verify the sender is a group member AND either
+		// the elected leader or this node independently knows a reshare is
+		// needed (has a local job). This allows the leader-driven path
+		// (event-triggered, prevents races) and the on-demand path (any
+		// member can coordinate when a sign request hits a stale key).
+		senderPeerID := tss.PartyID(s.Conn().RemotePeer().String())
+		_, leaderKnown := n.reshareLeader(msg.GroupID)
+		if !leaderKnown {
+			n.log.Warn("coord: reshare rejected, unknown group",
+				zap.String("group_id", msg.GroupID))
+			s.Write([]byte{coordNACK})
+			return
+		}
+		// Verify sender is a member of the group (old or new committee).
+		n.groupsMu.RLock()
+		grpInfo := n.groups[msg.GroupID]
+		n.groupsMu.RUnlock()
+		senderIsMember := false
+		if grpInfo != nil {
+			for _, m := range grpInfo.Members {
+				if m == senderPeerID {
+					senderIsMember = true
+					break
+				}
+			}
+		}
+		if !senderIsMember {
+			n.log.Warn("coord: reshare rejected, sender not in group",
+				zap.String("group_id", msg.GroupID),
+				zap.String("sender", string(senderPeerID)))
+			s.Write([]byte{coordNACK})
+			return
+		}
+
 		if n.reshareStore == nil {
 			n.log.Warn("coord: reshare rejected, reshare store not initialized")
 			s.Write([]byte{coordNACK})
 			return
 		}
 
+		// Only accept if this node has independently observed the need for a
+		// reshare (via chain events or admin API). Don't auto-create jobs from
+		// untrusted coord messages — the node's own chain poller creates jobs
+		// when it sees membership change events.
 		job, err := n.reshareStore.GetJob(msg.GroupID)
 		if err != nil || job == nil {
-			// No job exists — auto-create for API-triggered refresh.
-			if err := n.createReshareJob(msg.GroupID, "refresh", msg.OldParties, msg.NewParties, msg.Threshold); err != nil {
-				n.log.Warn("coord: reshare rejected, could not create job",
-					zap.String("group_id", msg.GroupID),
-					zap.Error(err))
-				s.Write([]byte{coordNACK})
-				return
-			}
-			job, _ = n.reshareStore.GetJob(msg.GroupID)
-			if job == nil {
-				n.log.Warn("coord: reshare rejected, job creation returned nil",
-					zap.String("group_id", msg.GroupID))
-				s.Write([]byte{coordNACK})
-				return
-			}
+			n.log.Warn("coord: reshare rejected, no local job (waiting for chain event)",
+				zap.String("group_id", msg.GroupID),
+				zap.String("sender", string(senderPeerID)))
+			s.Write([]byte{coordNACK})
+			return
 		}
 
 		// Check if this key is already done for this job. If so, a previous

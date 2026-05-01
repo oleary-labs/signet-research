@@ -267,7 +267,8 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 	mux.HandleFunc("POST /v1/sign", n.handleSign)
 
 	mux.HandleFunc("POST /admin/keys", n.handleListKeys)
-	mux.HandleFunc("POST /admin/reshare", n.handleStartReshare)
+	// Reshare is triggered via on-chain events (node add/remove or
+	// requestReshare() on the group contract), not via admin API.
 	mux.HandleFunc("POST /admin/reshare/status", n.handleReshareStatus)
 	mux.HandleFunc("GET /debug/stats", n.handleDebugStats)
 	n.server = &http.Server{Addr: cfg.APIAddr, Handler: mux}
@@ -737,6 +738,15 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Preflight: verify the auth proof will be accepted by participants
+	// before starting the network protocol.
+	if authProof != nil {
+		if _, err := n.auth.ValidateAuthProof(r.Context(), req.GroupID, authProof); err != nil {
+			httpError(w, http.StatusUnauthorized, "auth proof will be rejected by participants: "+err.Error())
+			return
+		}
+	}
+
 	sortedParties := tss.NewPartyIDSlice(grp.Members)
 	sessID := keygenSessionID(req.GroupID, keyID)
 
@@ -944,6 +954,14 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessID := signSessionID(req.GroupID, keyID, nonce)
+
+	// Preflight: verify the auth proof will be accepted by participants.
+	if authProof != nil {
+		if _, err := n.auth.ValidateAuthProof(r.Context(), req.GroupID, authProof); err != nil {
+			httpError(w, http.StatusUnauthorized, "auth proof will be rejected by participants: "+err.Error())
+			return
+		}
+	}
 
 	n.log.Info("sign starting",
 		zap.String("group_id", req.GroupID),
