@@ -469,7 +469,7 @@ func (n *Node) handleListKeys(w http.ResponseWriter, r *http.Request) {
 		ethAddr := ""
 		if len(info.GroupKey) > 0 {
 			pubKeyHex = "0x" + hex.EncodeToString(info.GroupKey)
-			if ke.Curve == CurveSecp256k1 {
+			if ke.Curve.IsSecp256k1() {
 				if addr, err := network.EthereumAddressFromGroupKey(info.GroupKey); err == nil {
 					ethAddr = "0x" + hex.EncodeToString(addr[:])
 				}
@@ -803,8 +803,8 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		"public_key": "0x" + hex.EncodeToString(info.GroupKey),
 	}
 
-	// Include ethereum_address only for secp256k1 keys.
-	if req.Curve == "secp256k1" {
+	// Include ethereum_address for secp256k1-based keys (FROST Schnorr and ECDSA).
+	if curve.IsSecp256k1() {
 		ethAddr, err := network.EthereumAddressFromGroupKey(info.GroupKey)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "eth addr: "+err.Error())
@@ -1017,11 +1017,17 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"group_id":  req.GroupID,
 		"key_id":    keyID,
+		"curve":     string(signCurve),
 		"signature": "0x" + hex.EncodeToString(sig.Bytes()),
 	}
 
-	// Include ethereum_signature for secp256k1 keys (backwards compat + on-chain format).
-	if ethSig, err := sig.SigEthereum(); err == nil {
+	// Include scheme-specific signature formats.
+	if signCurve == CurveEcdsaSecp256k1 {
+		// Standard ECDSA: r (32 bytes) || s (32 bytes).
+		// The caller can recover v from the public key if needed.
+		resp["ecdsa_signature"] = "0x" + hex.EncodeToString(sig.Bytes())
+	} else if ethSig, err := sig.SigEthereum(); err == nil {
+		// FROST Schnorr: R.x(32) || z(32) || v(1) for on-chain verification.
 		resp["ethereum_signature"] = "0x" + hex.EncodeToString(ethSig)
 	}
 

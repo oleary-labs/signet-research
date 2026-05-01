@@ -1,16 +1,17 @@
 package node
 
-// Curve identifies a FROST ciphersuite for keygen, sign, and storage.
+// Curve identifies a signing scheme for keygen, sign, and storage.
 type Curve string
 
 const (
-	CurveSecp256k1 Curve = "secp256k1"
-	CurveEd25519   Curve = "ed25519"
+	CurveSecp256k1      Curve = "secp256k1"
+	CurveEd25519        Curve = "ed25519"
+	CurveEcdsaSecp256k1 Curve = "ecdsa_secp256k1"
 )
 
 // Valid returns true if c is a recognized curve.
 func (c Curve) Valid() bool {
-	return c == CurveSecp256k1 || c == CurveEd25519
+	return c == CurveSecp256k1 || c == CurveEd25519 || c == CurveEcdsaSecp256k1
 }
 
 // String returns the wire name (used in CBOR params and API responses).
@@ -26,6 +27,8 @@ func (c Curve) StoragePrefix() byte {
 		return 0x01
 	case CurveEd25519:
 		return 0x02
+	case CurveEcdsaSecp256k1:
+		return 0x03
 	default:
 		return 0x00
 	}
@@ -38,9 +41,17 @@ func CurveFromStoragePrefix(b byte) (Curve, bool) {
 		return CurveSecp256k1, true
 	case 0x02:
 		return CurveEd25519, true
+	case 0x03:
+		return CurveEcdsaSecp256k1, true
 	default:
 		return "", false
 	}
+}
+
+// IsSecp256k1 returns true if this scheme uses secp256k1 keygen.
+// Both Secp256k1 (FROST Schnorr) and EcdsaSecp256k1 share the same DKG.
+func (c Curve) IsSecp256k1() bool {
+	return c == CurveSecp256k1 || c == CurveEcdsaSecp256k1
 }
 
 // KeyEntry identifies a stored key by its ID and curve.
