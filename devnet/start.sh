@@ -224,9 +224,12 @@ info "Creating signing group..."
 # auth policy and requests are unauthenticated (the existing devnet behavior).
 if $USE_AUTH; then
     GOOGLE_ISS="https://accounts.google.com"
-    GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-203385367894-0uhir5bt81bsg1gcflfg6tdt1m3eeo0s.apps.googleusercontent.com}"
-    ISSUERS="[(${GOOGLE_ISS},[${GOOGLE_CLIENT_ID}])]"
-    echo "    issuer: ${GOOGLE_ISS} (client_id: ${GOOGLE_CLIENT_ID})"
+    CID1="203385367894-0uhir5bt81bsg1gcflfg6tdt1m3eeo0s.apps.googleusercontent.com"
+    CID2="203385367894-30dkghcu30d4sjacullkc1q49epnvnrt.apps.googleusercontent.com"
+    ISSUERS="[(${GOOGLE_ISS},[${CID1},${CID2}])]"
+    echo "    issuer: ${GOOGLE_ISS}"
+    echo "      client_id: ${CID1}"
+    echo "      client_id: ${CID2}"
 else
     ISSUERS="[]"
 fi
