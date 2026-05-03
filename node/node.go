@@ -976,12 +976,27 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 	}
 	defer sn.Close()
 
+	// For ECDSA, the initiating node is the coordinator (aggregates
+	// signature shares). Ensure self is first in the signer list so
+	// the KMS assigns coordinator role to this node's party_id.
+	signersForCoord := sortedSigners
+	if signCurve == CurveEcdsaSecp256k1 {
+		self := tss.PartyID(n.host.Self())
+		signersForCoord = make([]tss.PartyID, 0, len(sortedSigners))
+		signersForCoord = append(signersForCoord, self)
+		for _, s := range sortedSigners {
+			if s != self {
+				signersForCoord = append(signersForCoord, s)
+			}
+		}
+	}
+
 	if err := n.broadcastCoord(r.Context(), sortedSigners, coordMsg{
 		Type:        msgSign,
 		GroupID:     req.GroupID,
 		KeyID:       keyID,
 		SignNonce:   nonce,
-		Signers:     sortedSigners,
+		Signers:     signersForCoord,
 		MessageHash: msgHash,
 		Curve:       string(signCurve),
 		Auth:        authProof,
@@ -996,7 +1011,7 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		SessionID:   sessID,
 		GroupID:     req.GroupID,
 		KeyID:       keyID,
-		Signers:     sortedSigners,
+		Signers:     signersForCoord,
 		MessageHash: msgHash,
 		Curve:       signCurve,
 	})

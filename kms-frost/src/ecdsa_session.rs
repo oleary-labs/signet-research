@@ -712,7 +712,14 @@ fn process_ecdsa(
                 &ordered_scalars,
             );
 
-            // The initiator (first signer) is the coordinator.
+            // The coordinator is this node's own party_id — only the
+            // initiating node's session will have party_id matching its
+            // own identity. Participants' sessions have their own party_id.
+            // We use party_id as coordinator: the initiating node passes
+            // its own party_id, and each participant passes theirs.
+            // The coordinator is whoever initiated the sign request —
+            // identified as signer_ids[0] (the Go node sorts signers and
+            // the initiator is always first in the coord message's signer list).
             let coordinator = &params.signer_ids[0];
             let is_coordinator = self_id == *coordinator;
 

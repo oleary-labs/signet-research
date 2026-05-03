@@ -267,6 +267,37 @@ impl Storage {
         Ok(())
     }
 
+    /// Migrate all keys from one group to another. Moves key data from the
+    /// old group's active tree to the new group's active tree, then drops
+    /// the old tree.
+    pub fn migrate_group(&self, old_group_id: &str, new_group_id: &str) -> Result<usize, String> {
+        let old_tree = self
+            .db
+            .open_tree(Self::active_tree_name(old_group_id))
+            .map_err(|e| format!("open old tree: {e}"))?;
+        let new_tree = self
+            .db
+            .open_tree(Self::active_tree_name(new_group_id))
+            .map_err(|e| format!("open new tree: {e}"))?;
+
+        let mut count = 0;
+        for entry in old_tree.iter() {
+            let (key, value) = entry.map_err(|e| format!("iter: {e}"))?;
+            new_tree
+                .insert(key, value)
+                .map_err(|e| format!("insert: {e}"))?;
+            count += 1;
+        }
+        self.db.flush().map_err(|e| format!("flush: {e}"))?;
+
+        // Drop the old tree.
+        self.db
+            .drop_tree(Self::active_tree_name(old_group_id).as_bytes())
+            .map_err(|e| format!("drop old tree: {e}"))?;
+
+        Ok(count)
+    }
+
     /// Drop all pending keys for a group.
     pub fn drop_pending(&self, group_id: &str) -> Result<(), String> {
         let name = Self::pending_tree_name(group_id);

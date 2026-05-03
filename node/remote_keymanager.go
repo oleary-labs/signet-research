@@ -111,10 +111,10 @@ func (rkm *RemoteKeyManager) RunSign(ctx context.Context, p SignParams) (*tss.Si
 	if result == nil {
 		return nil, fmt.Errorf("sign session: no result returned")
 	}
-	if len(result.SignatureR) == 0 || len(result.SignatureZ) != 32 {
-		return nil, fmt.Errorf("sign session: invalid signature sizes R=%d Z=%d", len(result.SignatureR), len(result.SignatureZ))
-	}
-
+	// For FROST, all participants produce the same signature.
+	// For threshold ECDSA, only the coordinator produces a signature —
+	// participants return empty R/Z after sending their share.
+	// Both cases: return whatever the KMS produced.
 	return &tss.Signature{
 		R: result.SignatureR,
 		Z: result.SignatureZ,

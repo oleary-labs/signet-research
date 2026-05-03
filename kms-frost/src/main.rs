@@ -33,6 +33,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
+
+    // CLI subcommand: migrate-group <data_dir> <old_group_id> <new_group_id>
+    if args.get(1).map(|s| s.as_str()) == Some("migrate-group") {
+        let data_dir = args.get(2).expect("usage: kms-frost migrate-group <data_dir> <old_group> <new_group>");
+        let old_group = args.get(3).expect("missing old_group_id");
+        let new_group = args.get(4).expect("missing new_group_id");
+        let storage = Storage::new(data_dir).map_err(|e| format!("open storage: {e}"))?;
+        let count = storage.migrate_group(old_group, new_group)?;
+        println!("migrated {count} keys from {old_group} to {new_group}");
+        storage.flush();
+        return Ok(());
+    }
+
     let socket_path = args
         .get(1)
         .map(|s| s.as_str())
