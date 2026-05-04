@@ -22,10 +22,10 @@ import (
 func startKMS(t *testing.T, socketPath, dataDir string) {
 	t.Helper()
 
-	kmsDir := filepath.Join("..", "kms-frost")
-	kmsBin := filepath.Join(kmsDir, "target", "debug", "kms-frost")
+	kmsDir := filepath.Join("..", "kms-tss")
+	kmsBin := filepath.Join(kmsDir, "target", "debug", "kms-tss")
 	if _, err := os.Stat(kmsBin); os.IsNotExist(err) {
-		t.Skip("kms-frost binary not built; run 'cargo build' in kms-frost/ first")
+		t.Skip("kms-tss binary not built; run 'cargo build' in kms-tss/ first")
 	}
 
 	cmd := exec.Command(kmsBin, socketPath, dataDir)

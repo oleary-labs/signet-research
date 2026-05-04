@@ -20,7 +20,7 @@ func (c Curve) String() string {
 }
 
 // StoragePrefix returns the single-byte prefix used in KMS sled storage keys.
-// Matches kms-frost/src/curve.rs Curve::storage_prefix().
+// Matches kms-tss/src/curve.rs Curve::storage_prefix().
 func (c Curve) StoragePrefix() byte {
 	switch c {
 	case CurveSecp256k1:

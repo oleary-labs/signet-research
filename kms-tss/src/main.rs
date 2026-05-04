@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "kms_frost=info".into()),
+                .unwrap_or_else(|_| "kms_tss=info".into()),
         )
         .init();
 
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // CLI subcommand: migrate-group <data_dir> <old_group_id> <new_group_id>
     if args.get(1).map(|s| s.as_str()) == Some("migrate-group") {
-        let data_dir = args.get(2).expect("usage: kms-frost migrate-group <data_dir> <old_group> <new_group>");
+        let data_dir = args.get(2).expect("usage: kms-tss migrate-group <data_dir> <old_group> <new_group>");
         let old_group = args.get(3).expect("missing old_group_id");
         let new_group = args.get(4).expect("missing new_group_id");
         let storage = Storage::new(data_dir).map_err(|e| format!("open storage: {e}"))?;
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(
         path = %socket_path.display(),
         data_dir = %data_dir,
-        "kms-frost listening"
+        "kms-tss listening"
     );
 
     Server::builder()

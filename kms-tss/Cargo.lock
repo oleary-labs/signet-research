@@ -977,7 +977,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kms-frost"
+name = "kms-tss"
 version = "0.1.0"
 dependencies = [
  "ciborium",
