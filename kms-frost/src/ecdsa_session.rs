@@ -341,11 +341,14 @@ impl EcdsaSession {
         if n < 3 {
             return Err("ECDSA requires at least 3 signers".to_string());
         }
-        // t = max malicious = (n-1)/2
+        // t = max malicious. For n signers, t = (n-1)/2 gives the maximum
+        // malicious tolerance. The protocol requires n ≥ 2t+1.
+        // With n > 2t+1, we get availability (more signers than minimum)
+        // while maintaining the same security guarantee.
         let max_malicious = (n - 1) / 2;
-        if n != 2 * max_malicious + 1 {
+        if n < 2 * max_malicious + 1 {
             return Err(format!(
-                "ECDSA requires exactly 2t+1 signers, got {n} (t={max_malicious})"
+                "ECDSA requires n >= 2t+1 signers, got {n} (t={max_malicious})"
             ));
         }
 
@@ -619,7 +622,7 @@ fn process_ecdsa(
                 return (EcdsaState::Completed, Err(ProcessError::Invalid("R is identity".into())));
             }
 
-            // Scalar interpolation of w using all 2t+1 points.
+            // Scalar interpolation of w using all n points (degree 2t, needs ≥ 2t+1).
             let w = scalar_interpolation(&ordered_scalars, &w_ordered, None);
             if bool::from(w.is_zero()) {
                 return (EcdsaState::Completed, Err(ProcessError::Invalid("w is zero".into())));

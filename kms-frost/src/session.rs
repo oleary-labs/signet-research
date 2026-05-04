@@ -1228,4 +1228,45 @@ mod tests {
         }
         println!("ECDSA 5 sequential signs: OK");
     }
+
+    #[test]
+    fn test_ecdsa_5_of_5_sign() {
+        // 5 parties, t=2, n=5=2t+1 (minimum for t=2).
+        init_tracing();
+        const PARTIES5: [&str; 5] = ["peer-A", "peer-B", "peer-C", "peer-D", "peer-E"];
+        let mut owned = make_storages(&PARTIES5);
+
+        // Keygen with all 5.
+        let party_ids: Vec<String> = PARTIES5.iter().map(|s| s.to_string()).collect();
+        let mut sessions: HashMap<String, (Session, Storage)> = HashMap::new();
+        let mut initial_messages = Vec::new();
+        for pid in &party_ids {
+            let params = KeygenParams {
+                group_id: GROUP_ID.to_string(),
+                key_id: KEY_ID.to_string(),
+                party_id: pid.clone(),
+                party_ids: party_ids.clone(),
+                threshold: 2,
+                curve: Curve::EcdsaSecp256k1,
+            };
+            let (storage, _) = owned.remove(pid).unwrap();
+            let (session, output) =
+                Session::start_keygen(&format!("keygen-{pid}"), params).expect("start_keygen");
+            initial_messages.extend(output.messages);
+            sessions.insert(pid.clone(), (session, storage));
+        }
+        let results = route(initial_messages, &mut sessions);
+        assert_eq!(results.len(), 5);
+        let group_key = results[0].group_key.clone().unwrap();
+        for (pid, (_, storage)) in sessions {
+            let dir = tempfile::tempdir().unwrap();
+            owned.insert(pid, (storage, dir));
+        }
+
+        // Sign with all 5 (n=5 > 2t+1=5 for t=2, or n=5 > 2t+1=3 for t=1).
+        let msg_hash = sha2::Sha256::digest(b"ecdsa 5-of-5 test");
+        let (sig_r, sig_s) = run_ecdsa_sign(&PARTIES5, &msg_hash, &mut owned);
+        verify_ecdsa_signature(&group_key, &msg_hash, &sig_r, &sig_s);
+        println!("ECDSA 5-of-5 sign: OK");
+    }
 }
