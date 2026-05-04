@@ -16,9 +16,9 @@ pub enum Curve {
     /// FROST Schnorr over Ed25519.
     Ed25519,
     /// Threshold ECDSA over secp256k1 (DJNPO20 robust protocol).
-    /// Produces standard ECDSA signatures (r, s, v) compatible with ecrecover.
+    /// Produces standard ECDSA signatures (r, s) compatible with ecrecover.
     /// Uses the same DKG/reshare as Secp256k1 (FROST keygen), but a different
-    /// 4-round signing protocol.
+    /// 4-round signing protocol. See ecdsa_session.rs for references.
     EcdsaSecp256k1,
 }
 

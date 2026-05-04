@@ -1,4 +1,4 @@
-//! Threshold ECDSA signing session (DJNPO20 robust protocol).
+//! Threshold ECDSA signing session (robust protocol).
 //!
 //! 4-round online protocol: 3 presigning rounds + 1 signing round.
 //! Uses the same DKG output (FROST keygen) as FROST Schnorr — only the
@@ -6,6 +6,27 @@
 //!
 //! The coordinator (initiating node) aggregates signature shares in R4.
 //! All other participants produce and send their share, then return no result.
+//!
+//! # References
+//!
+//! - **DJNPO20**: Damgård, Jakobsen, Nielsen, Pagter, Østergaard.
+//!   "Improved Threshold Signatures, Proactive Secret Sharing, and Input
+//!   Certification from LSS Isomorphisms." TCC 2020.
+//!   <https://eprint.iacr.org/2020/514>
+//!   Core protocol: degree-2t polynomial presigning avoids Beaver triple
+//!   generation. Requires N ≥ 2t+1 participants.
+//!
+//! - **GS21**: Groth, Shoup. "Design and Analysis of a Distributed ECDSA
+//!   Signing Service." IACR ePrint 2022/506 (originally presented 2021).
+//!   <https://eprint.iacr.org/2022/506>
+//!   Rerandomization technique for binding presignatures to signing context,
+//!   preventing Wagner-style attacks. Not yet implemented here (presignatures
+//!   are consumed inline, not stored).
+//!
+//! - **NEAR MPC**: Reference implementation in the NEAR threshold-signatures
+//!   crate (`crates/threshold-signatures/src/ecdsa/robust_ecdsa/`).
+//!   <https://github.com/near/mpc>
+//!   Our implementation follows the same protocol structure.
 
 use std::collections::BTreeMap;
 

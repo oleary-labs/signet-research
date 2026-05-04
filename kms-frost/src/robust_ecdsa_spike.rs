@@ -1,15 +1,8 @@
-//! Spike: Robust threshold ECDSA (DJNPO20) — 4-round online protocol.
+//! Spike: Robust threshold ECDSA — 4-round online protocol.
 //!
-//! This is a standalone implementation to validate the math and profile
-//! performance. Based on the NEAR MPC threshold-signatures crate's robust
-//! ECDSA implementation.
-//!
-//! Protocol:
-//!   Rounds 1-3: presigning (generates (R, alpha, beta, e) per party)
-//!   Round 4:    signing (each party computes share, coordinator aggregates)
-//!
-//! The keygen output is a standard FROST DKG share — same as our existing
-//! keygen. Only the signing protocol differs from FROST Schnorr.
+//! Standalone implementation to validate the math and profile performance.
+//! See ecdsa_session.rs for the distributed session implementation and
+//! full references (DJNPO20, GS21, NEAR MPC).
 
 #[cfg(test)]
 mod tests {
