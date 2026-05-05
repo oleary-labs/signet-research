@@ -34,6 +34,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
 
+    // CLI subcommand: list-keys <data_dir> <group_id>
+    if args.get(1).map(|s| s.as_str()) == Some("list-keys") {
+        let data_dir = args.get(2).expect("usage: kms-tss list-keys <data_dir> <group_id>");
+        let group_id = args.get(3).expect("missing group_id");
+        let storage = Storage::new(data_dir).map_err(|e| format!("open storage: {e}"))?;
+        let keys = storage.list_keys(group_id)?;
+        if keys.is_empty() {
+            println!("no keys found for group {group_id}");
+        } else {
+            for (key_id, curve) in &keys {
+                println!("{curve}\t{key_id}");
+            }
+            println!("\n{} keys total", keys.len());
+        }
+        return Ok(());
+    }
+
     // CLI subcommand: migrate-group <data_dir> <old_group_id> <new_group_id>
     if args.get(1).map(|s| s.as_str()) == Some("migrate-group") {
         let data_dir = args.get(2).expect("usage: kms-tss migrate-group <data_dir> <old_group> <new_group>");

@@ -116,6 +116,7 @@ impl Storage {
             let curve = match prefix {
                 0x01 => Curve::Secp256k1,
                 0x02 => Curve::Ed25519,
+                0x03 => Curve::EcdsaSecp256k1,
                 _ => continue, // skip unknown prefixes
             };
             let id = String::from_utf8(key[1..].to_vec()).map_err(|e| format!("key utf8: {e}"))?;
