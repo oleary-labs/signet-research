@@ -266,6 +266,7 @@ func New(cfg *Config, log *zap.Logger) (*Node, error) {
 	mux.HandleFunc("POST /v1/auth", n.handleAuth)
 	mux.HandleFunc("POST /v1/keygen", n.handleKeygen)
 	mux.HandleFunc("POST /v1/sign", n.handleSign)
+	mux.HandleFunc("POST /v1/delegate", n.handleDelegate)
 
 	mux.HandleFunc("POST /admin/keys", n.handleListKeys)
 	// Reshare is triggered via on-chain events (node add/remove or
@@ -523,6 +524,9 @@ func (n *Node) handleAuth(w http.ResponseWriter, r *http.Request) {
 
 		// Authorization key certificate fields
 		Certificate *AuthCertificate `json:"certificate,omitempty"`
+
+		// Delegation token (JWT signed by parent key)
+		DelegationToken string `json:"delegation_token,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "decode body: "+err.Error())
@@ -573,6 +577,53 @@ func (n *Node) handleAuth(w http.ResponseWriter, r *http.Request) {
 			"status":     "ok",
 			"identity":   identity,
 			"expires_at": int64(cert.Expiry),
+		})
+		return
+	}
+
+	// Delegation token path.
+	if req.DelegationToken != "" {
+		claims, err := n.VerifyDelegationToken(req.GroupID, req.DelegationToken)
+		if err != nil {
+			httpError(w, http.StatusUnauthorized, "delegation token verification failed: "+err.Error())
+			return
+		}
+
+		// Verify the sub-key exists.
+		keyExists := false
+		for _, curve := range []Curve{CurveSecp256k1, CurveEcdsaSecp256k1, CurveEd25519} {
+			if info, _ := n.km.GetKeyInfo(req.GroupID, claims.Sub, curve); info != nil {
+				keyExists = true
+				break
+			}
+		}
+		if !keyExists {
+			httpError(w, http.StatusNotFound, "delegated sub-key no longer exists: "+claims.Sub)
+			return
+		}
+
+		// Create session scoped to the sub-key's identity namespace.
+		// The identity is the sub-key's key_id prefix (everything before the suffix).
+		identity := claims.Sub
+		pubHex := sessionPubToHex(sessionPubBytes)
+		n.sessions.Put(pubHex, &SessionInfo{
+			Sub:      identity,
+			Exp:      time.Unix(claims.Exp, 0),
+			Identity: identity,
+		})
+		n.log.Info("auth: session registered (delegation token)",
+			zap.String("group_id", req.GroupID),
+			zap.String("sub_key", claims.Sub),
+			zap.String("parent_key", claims.Kid),
+			zap.String("session_pub", pubHex))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":     "ok",
+			"identity":   identity,
+			"key_id":     claims.Sub,
+			"parent_key": claims.Kid,
+			"expires_at": claims.Exp,
 		})
 		return
 	}
