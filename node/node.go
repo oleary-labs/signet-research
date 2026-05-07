@@ -866,15 +866,16 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 //	 "session_pub":"02abc...","request_sig":"hex64","nonce":"hex","timestamp":123}
 func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		GroupID     string `json:"group_id"`
-		KeyID       string `json:"key_id"`
-		KeySuffix   string `json:"key_suffix"`
-		Curve       string `json:"curve"`
-		MessageHash string `json:"message_hash"`
-		SessionPub  string `json:"session_pub"`
-		RequestSig  string `json:"request_sig"`
-		Nonce       string `json:"nonce"`
-		Timestamp   uint64 `json:"timestamp"`
+		GroupID     string       `json:"group_id"`
+		KeyID       string       `json:"key_id"`
+		KeySuffix   string       `json:"key_suffix"`
+		Curve       string       `json:"curve"`
+		MessageHash string       `json:"message_hash"`
+		Payload     *SignPayload `json:"payload"`
+		SessionPub  string       `json:"session_pub"`
+		RequestSig  string       `json:"request_sig"`
+		Nonce       string       `json:"nonce"`
+		Timestamp   uint64       `json:"timestamp"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "decode body: "+err.Error())
@@ -888,21 +889,34 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "unsupported curve: "+req.Curve)
 		return
 	}
-	if req.GroupID == "" || req.MessageHash == "" {
-		httpError(w, http.StatusBadRequest, "group_id and message_hash are required")
+	if req.GroupID == "" {
+		httpError(w, http.StatusBadRequest, "group_id is required")
+		return
+	}
+	if req.MessageHash == "" && req.Payload == nil {
+		httpError(w, http.StatusBadRequest, "message_hash or payload is required")
+		return
+	}
+	if req.MessageHash != "" && req.Payload != nil {
+		httpError(w, http.StatusBadRequest, "message_hash and payload are mutually exclusive")
 		return
 	}
 	req.GroupID = strings.ToLower(req.GroupID)
 
-	msgHash, err := hex.DecodeString(strings.TrimPrefix(req.MessageHash, "0x"))
-	if err != nil {
-		httpError(w, http.StatusBadRequest, "invalid message_hash: "+err.Error())
-		return
+	var msgHash []byte
+	if req.MessageHash != "" {
+		var err error
+		msgHash, err = hex.DecodeString(strings.TrimPrefix(req.MessageHash, "0x"))
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "invalid message_hash: "+err.Error())
+			return
+		}
+		if len(msgHash) != 32 {
+			httpError(w, http.StatusBadRequest, "message_hash must be exactly 32 bytes (64 hex chars)")
+			return
+		}
 	}
-	if len(msgHash) != 32 {
-		httpError(w, http.StatusBadRequest, "message_hash must be exactly 32 bytes (64 hex chars)")
-		return
-	}
+	// payload handling is deferred until after key info is loaded (need scope).
 
 	n.groupsMu.RLock()
 	grp, ok := n.groups[req.GroupID]
@@ -967,6 +981,24 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Scope enforcement: if the key has a scope, require structured payload.
+	// If the key is unscoped, require message_hash.
+	if len(keyInfo.Scope) > 0 {
+		if req.Payload == nil {
+			httpError(w, http.StatusBadRequest, "this key has a scope; use payload instead of message_hash")
+			return
+		}
+		hash, err := VerifyScopeAndHash(keyInfo.Scope, req.Payload)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "scope verification failed: "+err.Error())
+			return
+		}
+		msgHash = hash
+	} else if req.Payload != nil {
+		httpError(w, http.StatusBadRequest, "this key is unscoped; use message_hash instead of payload")
+		return
+	}
+
 	sortedSigners := tss.NewPartyIDSlice(grp.Members)
 	if !sortedSigners.Contains(keyInfo.PartyID) {
 		httpError(w, http.StatusBadRequest, "this node is not a member of group "+req.GroupID)
@@ -1016,6 +1048,17 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Serialize payload for coord message (so participants can verify scope).
+	var signPayloadBytes []byte
+	if req.Payload != nil {
+		var err error
+		signPayloadBytes, err = json.Marshal(req.Payload)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "serialize payload: "+err.Error())
+			return
+		}
+	}
+
 	if err := n.broadcastCoord(r.Context(), sortedSigners, coordMsg{
 		Type:        msgSign,
 		GroupID:     req.GroupID,
@@ -1024,6 +1067,7 @@ func (n *Node) handleSign(w http.ResponseWriter, r *http.Request) {
 		Signers:     signersForCoord,
 		MessageHash: msgHash,
 		Curve:       string(signCurve),
+		SignPayload: signPayloadBytes,
 		Auth:        authProof,
 	}); err != nil {
 		httpError(w, http.StatusInternalServerError, "coordinate: "+err.Error())

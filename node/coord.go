@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -67,6 +68,10 @@ type coordMsg struct {
 
 	// Scope: signing scope constraint bytes (keygen only). Empty = unscoped.
 	Scope []byte `cbor:"18,keyasint,omitempty"`
+
+	// SignPayload: structured signing payload for scoped keys (sign only).
+	// JSON-encoded SignPayload. Participants verify scope independently.
+	SignPayload []byte `cbor:"19,keyasint,omitempty"`
 
 	// Reshare only: old and new committee definitions.
 	OldParties   []tss.PartyID `cbor:"11,keyasint,omitempty"`
@@ -296,6 +301,35 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 					zap.String("key_id", msg.KeyID))
 				return
 			}
+
+			// Scope enforcement: if the key has a scope, participants
+			// independently verify the payload and compute the hash.
+			msgHashForSign := msg.MessageHash
+			if len(info.Scope) > 0 {
+				if len(msg.SignPayload) == 0 {
+					n.log.Error("coord: scoped key requires payload",
+						zap.String("group_id", msg.GroupID),
+						zap.String("key_id", msg.KeyID))
+					return
+				}
+				var payload SignPayload
+				if err := json.Unmarshal(msg.SignPayload, &payload); err != nil {
+					n.log.Error("coord: parse sign payload",
+						zap.String("group_id", msg.GroupID),
+						zap.Error(err))
+					return
+				}
+				hash, err := VerifyScopeAndHash(info.Scope, &payload)
+				if err != nil {
+					n.log.Error("coord: scope verification failed",
+						zap.String("group_id", msg.GroupID),
+						zap.String("key_id", msg.KeyID),
+						zap.Error(err))
+					return
+				}
+				msgHashForSign = hash
+			}
+
 			_, err = n.km.RunSign(sessCtx, SignParams{
 				Host:        n.host,
 				SN:          sn,
@@ -303,7 +337,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				GroupID:     msg.GroupID,
 				KeyID:       msg.KeyID,
 				Signers:     msg.Signers,
-				MessageHash: msg.MessageHash,
+				MessageHash: msgHashForSign,
 				Curve:       curve,
 			})
 			if err != nil {
