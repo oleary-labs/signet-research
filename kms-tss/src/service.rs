@@ -306,6 +306,7 @@ impl KeyManager for KmsService {
             group_key: stored.group_key,
             verifying_share: stored.verifying_share,
             generation: stored.generation,
+            scope: stored.scope,
         }))
     }
 

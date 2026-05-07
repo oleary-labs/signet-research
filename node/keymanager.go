@@ -63,6 +63,7 @@ type KeygenParams struct {
 	Parties   []tss.PartyID
 	Threshold int
 	Curve     Curve
+	Scope     []byte // optional signing scope constraint
 }
 
 // SignParams holds the inputs for a signing session.
@@ -110,4 +111,5 @@ type KeyInfo struct {
 	Parties  []tss.PartyID // all parties in the key group
 	Threshold int
 	Curve     Curve
+	Scope     []byte // signing scope constraint (empty = unscoped)
 }

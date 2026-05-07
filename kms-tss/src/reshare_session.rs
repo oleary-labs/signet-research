@@ -560,6 +560,7 @@ fn process_reshare<C: Ciphersuite>(
                 group_key: group_key.clone(),
                 verifying_share: vs_bytes.clone(),
                 generation: generation + 1,
+                scope: vec![], // TODO: preserve scope from original key
             };
             debug!(
                 key_id = params.key_id.as_str(),

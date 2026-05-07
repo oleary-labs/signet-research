@@ -145,6 +145,7 @@ message PublicKeyResponse {
   bytes  group_key       = 1; // compressed group public key (33 bytes secp256k1, 32 bytes Ed25519)
   bytes  verifying_share = 2; // this node's public key share
   uint64 generation      = 3;
+  bytes  scope           = 4; // signing scope constraint (empty = unscoped)
 }
 
 message KeyListEntry {

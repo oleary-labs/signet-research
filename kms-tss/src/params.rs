@@ -15,6 +15,10 @@ pub struct KeygenParams {
     /// Curve for this keygen. Defaults to secp256k1 if absent (backwards compat).
     #[serde(default = "default_curve")]
     pub curve: Curve,
+    /// Optional signing scope constraint. Set at keygen, stored with the key.
+    /// Format: [1-byte scheme][scheme-specific bytes]. Empty = unscoped.
+    #[serde(default)]
+    pub scope: Vec<u8>,
 }
 
 fn default_curve() -> Curve {

@@ -209,6 +209,7 @@ func (rkm *RemoteKeyManager) GetKeyInfo(groupID, keyID string, curve Curve) (*Ke
 		GroupKey: resp.GroupKey,
 		PartyID:  rkm.selfID,
 		Curve:    curve,
+		Scope:    resp.Scope,
 	}, nil
 }
 
@@ -378,6 +379,7 @@ type kmsKeygenParams struct {
 	PartyIDs  []string `cbor:"party_ids"`
 	Threshold int      `cbor:"threshold"`
 	Curve     string   `cbor:"curve,omitempty"`
+	Scope     []byte   `cbor:"scope,omitempty"`
 }
 
 // kmsSignParams is the CBOR wire format for sign session params.
@@ -402,6 +404,7 @@ func encodeKeygenParams(p KeygenParams) ([]byte, error) {
 		PartyIDs:  partyIDs,
 		Threshold: p.Threshold,
 		Curve:     string(p.Curve),
+		Scope:     p.Scope,
 	})
 }
 

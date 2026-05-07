@@ -459,6 +459,7 @@ fn process_typed<C: Ciphersuite>(
                     group_key: group_key.clone(),
                     verifying_share: verifying_share.clone(),
                     generation: 0,
+                    scope: params.scope.clone(),
                 };
                 try_invalid!(
                     storage.put_key(&params.group_id, &params.key_id, &params.curve, &stored),
@@ -806,6 +807,7 @@ mod tests {
                 party_ids: party_ids.clone(),
                 threshold: 2,
                 curve,
+                scope: vec![],
             };
             let (storage, _) = owned.remove(pid).unwrap();
             let (session, output) =
@@ -970,6 +972,7 @@ mod tests {
                 party_ids: party_ids.clone(),
                 threshold: 2,
                 curve: Curve::Secp256k1,
+                scope: vec![],
             };
             let (storage, _) = owned.remove(pid).unwrap();
             let (session, output) = Session::start_keygen(&format!("keygen-{pid}"), params).expect("start_keygen");
@@ -1248,6 +1251,7 @@ mod tests {
                 party_ids: party_ids.clone(),
                 threshold: 2,
                 curve: Curve::EcdsaSecp256k1,
+                scope: vec![],
             };
             let (storage, _) = owned.remove(pid).unwrap();
             let (session, output) =

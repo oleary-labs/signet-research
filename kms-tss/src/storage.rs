@@ -28,6 +28,10 @@ pub struct StoredKey {
     pub verifying_share: Vec<u8>,
     /// Key generation counter (0 for initial keygen, incremented on reshare).
     pub generation: u64,
+    /// Optional signing scope constraint. Format: [1-byte scheme][scheme-specific].
+    /// Empty = unscoped (signs any hash). Set at keygen time, immutable.
+    #[serde(default)]
+    pub scope: Vec<u8>,
 }
 
 /// sled-backed key storage with separate trees for active, pending, and archive.
@@ -349,6 +353,7 @@ mod tests {
             group_key: vec![0x02; 33],
             verifying_share: vec![0x03; 33],
             generation: 0,
+                scope: vec![],
         };
 
         storage.put_key("group-1", "key-a", &Curve::Secp256k1, &key).unwrap();
@@ -384,6 +389,7 @@ mod tests {
             group_key: vec![0x02; 33],
             verifying_share: vec![0x03; 33],
             generation: 0,
+                scope: vec![],
         };
         let ed_key = StoredKey {
             key_package: vec![10],
@@ -391,6 +397,7 @@ mod tests {
             group_key: vec![0x04; 32],
             verifying_share: vec![0x05; 32],
             generation: 0,
+                scope: vec![],
         };
 
         storage.put_key("group-1", "k1", &Curve::Secp256k1, &secp_key).unwrap();
@@ -415,6 +422,7 @@ mod tests {
             group_key: vec![0x02; 33],
             verifying_share: vec![0x03; 33],
             generation: 0,
+                scope: vec![],
         };
         storage.put_key("group-1", "k1", &c, &key_gen0).unwrap();
 
@@ -424,6 +432,7 @@ mod tests {
             group_key: vec![0x02; 33],
             verifying_share: vec![0x04; 33],
             generation: 1,
+                scope: vec![],
         };
         storage.put_pending("group-1", "k1", &c, &key_gen1).unwrap();
 
@@ -451,6 +460,7 @@ mod tests {
             group_key: vec![0x02; 33],
             verifying_share: vec![0x03; 33],
             generation: 0,
+                scope: vec![],
         };
         storage.put_key("group-1", "k1", &c, &key_gen0).unwrap();
 
@@ -460,6 +470,7 @@ mod tests {
             group_key: vec![0x02; 33],
             verifying_share: vec![0x04; 33],
             generation: 1,
+                scope: vec![],
         };
         storage.put_pending("group-1", "k1", &c, &key_gen1).unwrap();
         storage.commit_reshare("group-1", "k1", &c).unwrap();
@@ -482,6 +493,7 @@ mod tests {
             group_key: vec![],
             verifying_share: vec![],
             generation: 1,
+                scope: vec![],
         };
         storage.put_pending("group-1", "k1", &c, &key).unwrap();
         assert!(storage.get_pending("group-1", "k1", &c).unwrap().is_some());
@@ -502,6 +514,7 @@ mod tests {
             group_key: vec![0x02; 33],
             verifying_share: vec![0x03; 33],
             generation: 0,
+                scope: vec![],
         };
         storage.put_key("group-1", "k1", &c, &key).unwrap();
 

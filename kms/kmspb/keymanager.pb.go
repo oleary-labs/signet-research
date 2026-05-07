@@ -514,6 +514,7 @@ type PublicKeyResponse struct {
 	GroupKey       []byte                 `protobuf:"bytes,1,opt,name=group_key,json=groupKey,proto3" json:"group_key,omitempty"`                   // compressed group public key (33 bytes secp256k1, 32 bytes Ed25519)
 	VerifyingShare []byte                 `protobuf:"bytes,2,opt,name=verifying_share,json=verifyingShare,proto3" json:"verifying_share,omitempty"` // this node's public key share
 	Generation     uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	Scope          []byte                 `protobuf:"bytes,4,opt,name=scope,proto3" json:"scope,omitempty"` // signing scope constraint (empty = unscoped)
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -567,6 +568,13 @@ func (x *PublicKeyResponse) GetGeneration() uint64 {
 		return x.Generation
 	}
 	return 0
+}
+
+func (x *PublicKeyResponse) GetScope() []byte {
+	if x != nil {
+		return x.Scope
+	}
+	return nil
 }
 
 type KeyListEntry struct {
@@ -884,13 +892,14 @@ const file_keymanager_proto_rawDesc = "" +
 	"\x06key_id\x18\x02 \x01(\tR\x05keyId\x12\x14\n" +
 	"\x05curve\x18\x03 \x01(\tR\x05curve\"%\n" +
 	"\bGroupRef\x12\x19\n" +
-	"\bgroup_id\x18\x01 \x01(\fR\agroupId\"y\n" +
+	"\bgroup_id\x18\x01 \x01(\fR\agroupId\"\x8f\x01\n" +
 	"\x11PublicKeyResponse\x12\x1b\n" +
 	"\tgroup_key\x18\x01 \x01(\fR\bgroupKey\x12'\n" +
 	"\x0fverifying_share\x18\x02 \x01(\fR\x0everifyingShare\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x04R\n" +
-	"generation\";\n" +
+	"generation\x12\x14\n" +
+	"\x05scope\x18\x04 \x01(\fR\x05scope\";\n" +
 	"\fKeyListEntry\x12\x15\n" +
 	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x14\n" +
 	"\x05curve\x18\x02 \x01(\tR\x05curve\"H\n" +
