@@ -62,8 +62,11 @@ type coordMsg struct {
 	// plus session key binding.
 	Auth *AuthProof `cbor:"10,keyasint,omitempty"`
 
-	// Curve: "secp256k1" or "ed25519". Empty defaults to "secp256k1".
+	// Curve: "secp256k1", "ed25519", or "ecdsa_secp256k1". Empty defaults to "secp256k1".
 	Curve string `cbor:"16,keyasint,omitempty"`
+
+	// Scope: signing scope constraint bytes (keygen only). Empty = unscoped.
+	Scope []byte `cbor:"18,keyasint,omitempty"`
 
 	// Reshare only: old and new committee definitions.
 	OldParties   []tss.PartyID `cbor:"11,keyasint,omitempty"`
@@ -237,6 +240,7 @@ func (n *Node) handleCoordStream(s libp2pnet.Stream) {
 				Parties:   msg.Parties,
 				Threshold: msg.Threshold,
 				Curve:     curve,
+				Scope:     msg.Scope,
 			})
 			if err != nil {
 				n.log.Error("coord: keygen failed",

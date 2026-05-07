@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -660,6 +661,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		KeyID      string `json:"key_id"`
 		KeySuffix  string `json:"key_suffix"`
 		Curve      string `json:"curve"`
+		Scope      string `json:"scope"` // hex-encoded scope bytes; derives key_suffix when present
 		SessionPub string `json:"session_pub"`
 		RequestSig string `json:"request_sig"`
 		Nonce      string `json:"nonce"`
@@ -678,6 +680,24 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "unsupported curve: "+req.Curve)
 		return
 	}
+	// Parse scope and derive key_suffix from it.
+	var scopeBytes []byte
+	if req.Scope != "" {
+		var err error
+		scopeBytes, err = hex.DecodeString(strings.TrimPrefix(req.Scope, "0x"))
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "invalid scope hex: "+err.Error())
+			return
+		}
+		if len(scopeBytes) < 1 {
+			httpError(w, http.StatusBadRequest, "scope must be at least 1 byte (scheme prefix)")
+			return
+		}
+		// Derive key_suffix from scope hash — same scope = same key.
+		scopeHash := sha256.Sum256(scopeBytes)
+		req.KeySuffix = hex.EncodeToString(scopeHash[:8])
+	}
+
 	if req.GroupID == "" {
 		httpError(w, http.StatusBadRequest, "group_id is required")
 		return
@@ -771,6 +791,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		Parties:   sortedParties,
 		Threshold: grp.Threshold,
 		Curve:     string(curve),
+		Scope:     scopeBytes,
 		Auth:      authProof,
 	}); err != nil {
 		httpError(w, http.StatusInternalServerError, "coordinate: "+err.Error())
@@ -786,6 +807,7 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		Parties:   sortedParties,
 		Threshold: grp.Threshold,
 		Curve:     curve,
+		Scope:     scopeBytes,
 	})
 	if err != nil {
 		n.log.Error("keygen failed",
@@ -801,6 +823,9 @@ func (n *Node) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		"key_id":     keyID,
 		"curve":      req.Curve,
 		"public_key": "0x" + hex.EncodeToString(info.GroupKey),
+	}
+	if len(scopeBytes) > 0 {
+		resp["scope"] = "0x" + hex.EncodeToString(scopeBytes)
 	}
 
 	// Include ethereum_address for secp256k1-based keys (FROST Schnorr and ECDSA).

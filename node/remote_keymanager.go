@@ -82,6 +82,7 @@ func (rkm *RemoteKeyManager) RunKeygen(ctx context.Context, p KeygenParams) (*Ke
 	return &KeyInfo{
 		GroupKey: result.GroupKey,
 		Curve:    p.Curve,
+		Scope:    p.Scope,
 	}, nil
 }
 
